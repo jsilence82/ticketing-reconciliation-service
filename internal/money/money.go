@@ -59,17 +59,120 @@ func RoundNumpy(x float64) float64 {
 	return math.RoundToEven(x*100) / 100
 }
 
-// SumSequential adds left to right, matching Python's builtin sum().
+// SumSequential adds strictly left to right with no compensation.
 //
-// Note that pandas' Series.sum() is NOT this — it uses pairwise summation and
-// can differ by 1 ULP. Per docs/PARITY.md we implement sequential first and
-// only port pairwise if a parity cell actually mismatches.
+// This matches NEITHER of the reference's two summation sites. It is kept as
+// the naive baseline the other two are contrasted against in tests, and as the
+// thing you must not reach for by reflex when porting a Python sum().
 func SumSequential(xs []float64) float64 {
 	var total float64
 	for _, x := range xs {
 		total += x
 	}
 	return total
+}
+
+// SumPythonBuiltin adds the way CPython's builtin sum() does over floats.
+//
+// Since CPython 3.12, sum() does NOT accumulate naively: it applies
+// Kahan-Babuska-Neumaier compensated summation to floats. The dashboard runs
+// 3.13.6, so `sum(tx["gross"] for tx in matched)` at
+// core/reconciliation.py:172-174 is compensated, and a naive loop produces
+// different bits.
+//
+// This is version-sensitive in a way worth flagging: the same dashboard code
+// on CPython 3.11 would produce naive-summation results. The goldens are
+// therefore only valid against the pinned interpreter, which is why
+// docs/PARITY.md records it.
+func SumPythonBuiltin(xs []float64) float64 {
+	var (
+		total float64 // running sum, CPython's f_result
+		comp  float64 // compensation term, CPython's c
+	)
+
+	for _, x := range xs {
+		t := total + x
+		// Accumulate the low-order bits lost by the addition above, taking the
+		// branch on relative magnitude exactly as CPython does.
+		if math.Abs(total) >= math.Abs(x) {
+			comp += (total - t) + x
+		} else {
+			comp += (x - t) + total
+		}
+		total = t
+	}
+
+	return total + comp
+}
+
+// pairwiseBlockSize mirrors numpy's PW_BLOCKSIZE. Above it, numpy splits the
+// input recursively; at or below it, numpy uses eight running accumulators.
+const pairwiseBlockSize = 128
+
+// SumPandas adds the way pandas' Series.sum() does, which is numpy's pairwise
+// summation rather than a left-to-right loop.
+//
+// This is NOT interchangeable with SumSequential. Over the fixture in
+// testdata/sums.json the two disagree on roughly half the arrays, and a
+// one-ULP disagreement survives rounding often enough to move a cent.
+//
+// Use it at the sites where the reference reduces a pandas object:
+// grp["revenue"].sum() on the no-PayPal fallback path
+// (core/reconciliation.py:177) and the TOTAL row (:196-198). Use
+// SumSequential where the reference uses Python's builtin sum() over a list of
+// floats (:172-174).
+//
+// SSG runs 8-9 performances, which lands exactly on the threshold where numpy
+// switches from a simple loop to eight accumulators, so the distinction is
+// live rather than theoretical.
+func SumPandas(xs []float64) float64 {
+	return pairwiseSum(xs)
+}
+
+// pairwiseSum reproduces numpy's npy_pairwise_sum for contiguous float64.
+func pairwiseSum(a []float64) float64 {
+	n := len(a)
+
+	if n < 8 {
+		var res float64
+		for _, x := range a {
+			res += x
+		}
+		return res
+	}
+
+	if n <= pairwiseBlockSize {
+		// Eight independent accumulators, seeded with the first eight
+		// elements. Reassociating this into a single running total changes the
+		// result, which is the entire point.
+		r := [8]float64{a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]}
+
+		i := 8
+		for ; i < n-(n%8); i += 8 {
+			r[0] += a[i+0]
+			r[1] += a[i+1]
+			r[2] += a[i+2]
+			r[3] += a[i+3]
+			r[4] += a[i+4]
+			r[5] += a[i+5]
+			r[6] += a[i+6]
+			r[7] += a[i+7]
+		}
+
+		// The specific bracketing here is load-bearing.
+		res := ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]))
+
+		for ; i < n; i++ {
+			res += a[i]
+		}
+		return res
+	}
+
+	// Split on a multiple of eight so each half hits the accumulator path in
+	// the same alignment numpy would use.
+	n2 := n / 2
+	n2 -= n2 % 8
+	return pairwiseSum(a[:n2]) + pairwiseSum(a[n2:])
 }
 
 // Money is an amount in minor units (cents). This is the durable storage

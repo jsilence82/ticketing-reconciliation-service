@@ -2,6 +2,7 @@
 
 GO             ?= go
 BIN            := bin
+PARITY_OUT     ?= .parity
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS        := -s -w -X main.version=$(VERSION)
 CMDS           := server backfill parity
@@ -12,7 +13,7 @@ CMDS           := server backfill parity
 DASHBOARD_VENV ?= $(HOME)/Coding projects/SSG Ticket Dashboard/.venv
 PYTHON         ?= $(DASHBOARD_VENV)/bin/python
 
-.PHONY: check build test race lint fmt fmt-fix vet tidy clean money-fixture help
+.PHONY: check build test race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-fixed check-python help
 
 ## check: fmt + vet + lint + test — what CI runs
 check: fmt vet lint test
@@ -69,15 +70,44 @@ tidy:
 ##
 ## Only run this when deliberately changing the pinned version set. A diff in
 ## internal/money/testdata/rounding.json means the parity baseline moved.
-money-fixture:
+money-fixture: check-python
+	"$(PYTHON)" tools/money/gen_rounding_fixture.py
+
+## sum-fixture: regenerate the pandas/CPython summation fixture
+sum-fixture: check-python
+	"$(PYTHON)" tools/money/gen_sum_fixture.py
+
+## fixtures: regenerate every parity fixture
+fixtures: money-fixture sum-fixture
+
+## parity: run the Go engine and the Python reference over the same real data
+##          and diff them cell by cell (CLAUDE.md guardrail 1)
+##
+## Needs SSG_PARITY_DATA pointing at the out-of-tree historical dataset, and the
+## reference/ checkout for the Python side. Exits non-zero on any difference.
+parity: check-python build
+	@test -n "$(SSG_PARITY_DATA)" || { \
+		echo "SSG_PARITY_DATA is unset — see docs/ENVIRONMENT.md"; exit 1; }
+	@mkdir -p $(PARITY_OUT)
+	"$(PYTHON)" tools/parity/driver.py "$(SSG_PARITY_DATA)" $(PARITY_OUT)/python.json
+	./$(BIN)/parity -data "$(SSG_PARITY_DATA)" -out $(PARITY_OUT)/go.json
+	"$(PYTHON)" tools/parity/compare.py $(PARITY_OUT)/python.json $(PARITY_OUT)/go.json
+
+## parity-fixed: same, but with every fix flag on — EXPECTED to differ.
+##                Quantifies what the known defects are worth in real money.
+parity-fixed: check-python build
+	@mkdir -p $(PARITY_OUT)
+	./$(BIN)/parity -data "$(SSG_PARITY_DATA)" -fix-all -out $(PARITY_OUT)/go-fixed.json
+	-"$(PYTHON)" tools/parity/compare.py $(PARITY_OUT)/python.json $(PARITY_OUT)/go-fixed.json
+
+check-python:
 	@test -x "$(PYTHON)" || { \
 		echo "python not found at: $(PYTHON)"; \
-		echo "set PYTHON=/path/to/python (needs numpy)"; exit 1; }
-	"$(PYTHON)" tools/money/gen_rounding_fixture.py
+		echo "set PYTHON=/path/to/python (needs numpy + pandas)"; exit 1; }
 
 ## clean: remove build output
 clean:
-	rm -rf $(BIN)
+	rm -rf $(BIN) $(PARITY_OUT)
 
 ## help: list targets
 help:

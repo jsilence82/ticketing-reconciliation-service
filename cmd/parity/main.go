@@ -2,36 +2,217 @@
 // emits the result as JSON for cell-by-cell diffing against the Python
 // reference.
 //
-// Not implemented: scheduled for P1, once internal/recon has a body. This is
-// the gate described in CLAUDE.md guardrail 1 — no live webhook subscription
-// until its output matches the dashboard across real history.
+// This is the gate described in CLAUDE.md guardrail 1: no live webhook
+// subscription until this output matches the dashboard across real history.
+//
+// Pair it with tools/parity/driver.py, which produces the same JSON shape from
+// the unmodified reference implementation, then diff the two files.
+//
+//	python tools/parity/driver.py "$SSG_PARITY_DATA" python.json
+//	./bin/parity -out go.json
+//	python tools/parity/compare.py python.json go.json
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/snapshot"
 )
 
 var version = "dev"
 
+// Floats are emitted as hex literals so the comparison is over exact IEEE-754
+// bits rather than a decimal rendering that could mask a one-ULP difference.
+type totalsRowJSON struct {
+	PerformanceDate string `json:"performance_date"`
+	Transactions    int    `json:"transactions"`
+	Gross           string `json:"gross"`
+	Fees            string `json:"fees"`
+	Net             string `json:"net"`
+}
+
+type totalsJSON struct {
+	Rows  []totalsRowJSON `json:"rows"`
+	Total *totalsRowJSON  `json:"total"`
+}
+
+type statsRowJSON struct {
+	PerformanceDate string         `json:"performance_date"`
+	TotalTickets    int            `json:"total_tickets"`
+	ByCategory      map[string]int `json:"by_category"`
+}
+
+type statsJSON struct {
+	Rows       []statsRowJSON `json:"rows"`
+	Total      *statsRowJSON  `json:"total"`
+	Categories []string       `json:"categories"`
+}
+
+type showJSON struct {
+	Totals         totalsJSON `json:"totals"`
+	Statistics     statsJSON  `json:"statistics"`
+	MatchedTxnIDs  []string   `json:"matched_txn_ids"`
+	UnmatchedCount int        `json:"unmatched_count"`
+}
+
+type outputJSON struct {
+	Env         map[string]string   `json:"env"`
+	RecordCount int                 `json:"record_count"`
+	TxnCount    int                 `json:"txn_count"`
+	Shows       []string            `json:"shows"`
+	Results     map[string]showJSON `json:"results"`
+}
+
+// hexf renders a float the way Python's float.hex() does.
+func hexf(v float64) string {
+	return strconv.FormatFloat(v, 'x', -1, 64)
+}
+
 func main() {
-	fmt.Fprintf(os.Stderr, "ticketing-reconciliation-service parity %s\n", version)
+	var (
+		out     = flag.String("out", "", "write JSON here (default: stdout)")
+		dataDir = flag.String("data", "", "snapshot directory (default: $SSG_PARITY_DATA)")
+		fixAll  = flag.Bool("fix-all", false,
+			"enable every fix flag; output will NOT match the reference (see docs/PARITY.md)")
+	)
+	flag.Parse()
 
-	cfg, err := config.Load()
+	// Default: reproduce the reference exactly, bug for bug. -fix-all exists to
+	// quantify how much the known defects actually move the numbers, and to
+	// prove the comparison harness can detect a difference at all — a parity
+	// check that cannot fail is worthless.
+	flags := recon.Flags{}
+	if *fixAll {
+		flags = recon.Flags{
+			FixUnmatchedDetection:    true,
+			FixCrossNightDoubleCount: true,
+			FixMultiRefund:           true,
+			FixRetainedFeeRatio:      true,
+			FixStatusReadmit:         true,
+			FixStatusTrim:            true,
+			FixNaTPerformanceDate:    true,
+			FixTransactionUnits:      true,
+		}
+	}
+
+	dir := *dataDir
+	if dir == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config: %v\n", err)
+			os.Exit(2)
+		}
+		dir = cfg.ParityDataDir
+	}
+	if dir == "" {
+		fmt.Fprintln(os.Stderr, "no snapshot directory: pass -data or set SSG_PARITY_DATA")
+		fmt.Fprintln(os.Stderr, "It must point OUTSIDE this repository (see CLAUDE.md).")
+		os.Exit(2)
+	}
+
+	snap, err := snapshot.Load(dir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		os.Exit(2)
+		fmt.Fprintf(os.Stderr, "load snapshot: %v\n", err)
+		os.Exit(1)
 	}
 
-	if cfg.ParityDataDir == "" {
-		fmt.Fprintln(os.Stderr, "SSG_PARITY_DATA is unset; nothing to reconcile against.")
-		fmt.Fprintln(os.Stderr, "Point it at the out-of-tree historical data directory.")
-		os.Exit(2)
+	shows := snap.Shows()
+	sort.Strings(shows)
+
+	results := make(map[string]showJSON, len(shows))
+	for _, show := range shows {
+		res, err := recon.Build(snap.Tickets, snap.Txns, show, flags)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reconcile %q: %v\n", show, err)
+			os.Exit(1)
+		}
+		results[show] = toJSON(res)
 	}
 
-	fmt.Fprintf(os.Stderr, "parity data: %s\n", cfg.ParityDataDir)
-	fmt.Fprintln(os.Stderr, "not implemented: scheduled for P1. See docs/PARITY.md.")
-	os.Exit(1)
+	payload := outputJSON{
+		Env:         map[string]string{"go": version, "impl": "go"},
+		RecordCount: len(snap.Tickets),
+		TxnCount:    len(snap.Txns),
+		Shows:       shows,
+		Results:     results,
+	}
+
+	enc, err := json.MarshalIndent(payload, "", " ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "encode: %v\n", err)
+		os.Exit(1)
+	}
+	enc = append(enc, '\n')
+
+	if *out == "" {
+		_, _ = os.Stdout.Write(enc)
+	} else if err := os.WriteFile(*out, enc, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "write %s: %v\n", *out, err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "%d records, %d transactions, %d shows\n",
+		len(snap.Tickets), len(snap.Txns), len(shows))
+}
+
+func toJSON(res recon.Result) showJSON {
+	out := showJSON{
+		Totals:     totalsJSON{Rows: []totalsRowJSON{}},
+		Statistics: statsJSON{Rows: []statsRowJSON{}, Categories: []string{}},
+		// The reference reports the matched list in attribution order.
+		MatchedTxnIDs:  []string{},
+		UnmatchedCount: len(res.Unmatched),
+	}
+
+	for _, r := range res.Totals.Rows {
+		out.Totals.Rows = append(out.Totals.Rows, totalsRowJSON{
+			PerformanceDate: r.PerformanceDate,
+			Transactions:    r.Transactions,
+			Gross:           hexf(r.Gross),
+			Fees:            hexf(r.Fees),
+			Net:             hexf(r.Net),
+		})
+	}
+	if len(res.Totals.Rows) > 0 {
+		t := res.Totals.Total
+		out.Totals.Total = &totalsRowJSON{
+			PerformanceDate: t.PerformanceDate,
+			Transactions:    t.Transactions,
+			Gross:           hexf(t.Gross),
+			Fees:            hexf(t.Fees),
+			Net:             hexf(t.Net),
+		}
+	}
+
+	if res.Statistics.Categories != nil {
+		out.Statistics.Categories = res.Statistics.Categories
+	}
+	for _, r := range res.Statistics.Rows {
+		out.Statistics.Rows = append(out.Statistics.Rows, statsRowJSON{
+			PerformanceDate: r.PerformanceDate,
+			TotalTickets:    r.TotalTickets,
+			ByCategory:      r.ByCategory,
+		})
+	}
+	if len(res.Statistics.Rows) > 0 {
+		t := res.Statistics.Total
+		out.Statistics.Total = &statsRowJSON{
+			PerformanceDate: t.PerformanceDate,
+			TotalTickets:    t.TotalTickets,
+			ByCategory:      t.ByCategory,
+		}
+	}
+
+	for _, tx := range res.MatchedTxns {
+		out.MatchedTxnIDs = append(out.MatchedTxnIDs, tx.TxnID)
+	}
+
+	return out
 }

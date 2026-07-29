@@ -46,3 +46,6 @@ venv/
 .DS_Store
 .idea/
 *.swp
+
+# Parity harness scratch output (contains figures derived from live data)
+.parity/
