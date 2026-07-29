@@ -1,0 +1,47 @@
+# Mirrors the shape of fica-ci-bridge's CI: a single build job on ubuntu-latest,
+# triggered on push and PR to main, with toolchain caching delegated to the
+# setup action. No matrix, no image push, no release job.
+#
+# One deliberate addition: a lint step. fica-ci-bridge has no linter at all, but
+# CLAUDE.md asks for linting on this repo.
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        run: make fmt
+
+      - name: Vet
+        run: make vet
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make build

@@ -1,0 +1,50 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - depguard
+    - bodyclose
+    - misspell
+    - revive
+
+  settings:
+    depguard:
+      rules:
+        # internal/recon is the ported reconciliation logic. It must stay a
+        # pure library — plain slices in, plain structs out — so the parity
+        # harness can drive it directly. This is what makes CLAUDE.md
+        # guardrail 2 mechanically enforceable rather than a convention
+        # someone erodes during a busy week.
+        recon-stays-pure:
+          files:
+            - "**/internal/recon/**"
+          deny:
+            - pkg: "database/sql"
+              desc: "internal/recon must not touch storage; pass data in as slices"
+            - pkg: "net/http"
+              desc: "internal/recon must not do I/O; it is a pure library"
+            - pkg: "github.com/jackc/pgx"
+              desc: "internal/recon must not touch storage; pass data in as slices"
+            - pkg: "github.com/jsilence82/ticketing-reconciliation-service/internal/store"
+              desc: "internal/recon must not depend on the store package"
+
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+
+  exclusions:
+    rules:
+      # Test files legitimately ignore errors on cleanup paths.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

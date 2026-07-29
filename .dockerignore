@@ -1,0 +1,42 @@
+# Keep this in sync with .gitignore.
+#
+# .gitignore only stops git from tracking a path. A Dockerfile doing a broad
+# `COPY . .` will still bake an untracked directory into an image layer, so
+# anything sensitive must be listed HERE as well.
+
+# --- Porting-phase scaffolding (see CLAUDE.md) ---------------------------
+reference/
+
+# --- Real provider data ---------------------------------------------------
+snapshots/
+testdata/
+data/
+
+# --- Secrets --------------------------------------------------------------
+.env
+.env.*
+*.pem
+*.key
+secrets.toml
+.streamlit/
+
+# --- VCS / build ----------------------------------------------------------
+.git/
+.gitignore
+/bin/
+/dist/
+*.test
+coverage.*
+
+# --- Python (parity harness generator — not needed in the runtime image) --
+tools/parity/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Docs / OS ------------------------------------------------------------
+*.md
+!README.md
+.DS_Store
+.idea/

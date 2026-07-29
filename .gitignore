@@ -1,0 +1,48 @@
+# --- Porting-phase scaffolding -------------------------------------------
+# A copy of the SSG dashboard repo, kept only while the reconciliation logic
+# is being ported. Never commit it: it can carry buyer PII and account data.
+# Must stay in sync with .dockerignore — .gitignore alone does not stop a
+# broad `COPY . .` from baking it into an image layer.
+reference/
+
+# Captured provider snapshots used by the parity harness. These contain real
+# order and transaction data, including buyer PII.
+snapshots/
+testdata/parity/*/input/
+
+# --- Local-only project docs ---------------------------------------------
+# Kept out of version control by request. NOTE: docs/PARITY.md is the record
+# that CLAUDE.md guardrail 2 requires ("recorded here, with a reason"), so
+# while it is ignored, that ledger exists only on this machine — it is not
+# shared, reviewed, or backed up with the repo.
+CLAUDE.md
+docs/
+
+# --- Secrets --------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.toml
+.streamlit/
+
+# --- Go -------------------------------------------------------------------
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+vendor/
+
+# --- Python (parity harness generator) -----------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- OS / editor ----------------------------------------------------------
+.DS_Store
+.idea/
+*.swp
