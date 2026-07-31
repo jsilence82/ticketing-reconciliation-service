@@ -3,6 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
@@ -151,4 +152,116 @@ func payPalDate(s string) time.Time {
 		return time.Time{}
 	}
 	return t.UTC()
+}
+
+// searchTransaction is the RAW Transaction Search shape, as opposed to the
+// dashboard's already-normalized cache form.
+type searchTransaction struct {
+	TransactionInfo struct {
+		TransactionID     string `json:"transaction_id"`
+		InitiationDate    string `json:"transaction_initiation_date"`
+		TransactionStatus string `json:"transaction_status"`
+		PayPalReferenceID string `json:"paypal_reference_id"`
+		TransactionAmount *money `json:"transaction_amount"`
+		FeeAmount         *money `json:"fee_amount"`
+	} `json:"transaction_info"`
+}
+
+// money is PayPal's amount object. `value` is a DECIMAL STRING, not a number —
+// which is convenient, because it means no float ever round-trips through JSON
+// on the way in.
+type money struct {
+	Value        string `json:"value"`
+	CurrencyCode string `json:"currency_code"`
+}
+
+// FromPayPalSearch builds a record from one raw Transaction Search result.
+//
+// # The sign convention
+//
+// CLAUDE.md calls this the highest-risk conversion in the project, and it is:
+// every downstream figure flows through net = gross + fee, so getting it wrong
+// silently doubles or zeroes the fees in every report rather than failing.
+//
+// Transaction Search returns fee_amount ALREADY SIGNED — negative on a charge,
+// positive on a refund — so net is gross PLUS fee, never minus
+// (api/paypal.py:88). Webhooks differ: they report paypal_fee as a positive
+// magnitude in both directions and need explicit negation. That divergence is
+// why both sources normalize here rather than at their call sites.
+func FromPayPalSearch(raw []byte, origin model.Origin) (model.EventRecord, error) {
+	var s searchTransaction
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal search record: %w", err)
+	}
+
+	ti := s.TransactionInfo
+	if ti.TransactionID == "" {
+		return model.EventRecord{}, fmt.Errorf("paypal search record has no transaction_id")
+	}
+
+	gross := parseAmount(ti.TransactionAmount)
+	fee := parseAmount(ti.FeeAmount)
+
+	currency := ""
+	if ti.TransactionAmount != nil {
+		currency = ti.TransactionAmount.CurrencyCode
+	}
+
+	// Build the normalized shape the rest of the service uses, so a row from
+	// Transaction Search and a row from the dashboard cache are indistinguishable
+	// downstream.
+	normalized := map[string]any{
+		"txn_id": ti.TransactionID,
+		// The reference takes the first ten characters with NO timezone
+		// conversion (api/paypal.py:85). Parsing and reformatting would shift
+		// the date for non-UTC offsets.
+		"date":                dateKey(ti.InitiationDate),
+		"gross":               gross,
+		"fee":                 fee,
+		"net":                 gross + fee,
+		"status":              ti.TransactionStatus,
+		"paypal_reference_id": ti.PayPalReferenceID,
+		"currency":            currency,
+	}
+
+	blob, err := json.Marshal(normalized)
+	if err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal %s: %w", ti.TransactionID, err)
+	}
+
+	payload, err := Sanitize(model.ResourcePayPalTransaction, blob)
+	if err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal %s: %w", ti.TransactionID, err)
+	}
+
+	return model.EventRecord{
+		Source:       model.SourcePayPal,
+		ResourceType: model.ResourcePayPalTransaction,
+		ResourceID:   ti.TransactionID,
+		Origin:       origin,
+		Status:       "received",
+		Payload:      payload,
+		OccurredAt:   payPalDate(dateKey(ti.InitiationDate)),
+	}, nil
+}
+
+// parseAmount reads PayPal's decimal string. A missing object is zero, matching
+// the reference's `(ti.get("transaction_amount") or {}).get("value", 0)`.
+func parseAmount(m *money) float64 {
+	if m == nil || m.Value == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(m.Value, 64)
+	if err != nil {
+		return 0
+	}
+	return f
+}
+
+// dateKey takes the first ten characters, as the reference does.
+func dateKey(s string) string {
+	if len(s) < 10 {
+		return ""
+	}
+	return s[:10]
 }

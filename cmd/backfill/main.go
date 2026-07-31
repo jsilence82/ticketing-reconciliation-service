@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/importer"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/snapshot"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
@@ -53,7 +54,12 @@ func run() error {
 		dsn = flag.String("database-url", "",
 			"Postgres connection string (default: $DATABASE_URL)")
 		migrateFirst = flag.Bool("migrate", true, "apply pending migrations before importing")
-		reconcile    = flag.Bool("reconcile", true,
+		from         = flag.String("from", "",
+			"PayPal window start, YYYY-MM-DD (--live only; defaults to 3 years back, "+
+				"the Transaction Search limit)")
+		to = flag.String("to", "",
+			"PayPal window end, YYYY-MM-DD (--live only; defaults to today)")
+		reconcile = flag.Bool("reconcile", true,
 			"run a reconcile pass after importing, so a backfill is self-contained "+
 				"and does not have to wait on a worker poll tick")
 	)
@@ -61,16 +67,12 @@ func run() error {
 
 	fmt.Fprintf(os.Stderr, "ticketing-reconciliation-service backfill %s\n", version)
 
-	if *fromSnapshot == "" {
-		if !*live {
-			// Guardrail 4. Ticket Tailor has no sandbox, so a key in the
-			// environment is a live key by construction — the gate cannot be
-			// delegated to PAYPAL_SANDBOX.
-			return errors.New("nothing to do: pass --from-snapshot DIR, or --live to " +
-				"reach real provider APIs (see CLAUDE.md guardrail 4)")
-		}
-		return errors.New("--live REST import is not implemented yet; it is the next " +
-			"step after the snapshot path. Use --from-snapshot for now")
+	if *fromSnapshot == "" && !*live {
+		// Guardrail 4. Ticket Tailor has no sandbox, so a key in the environment
+		// is a live key by construction — the gate cannot be delegated to
+		// PAYPAL_SANDBOX.
+		return errors.New("nothing to do: pass --from-snapshot DIR, or --live to " +
+			"reach real provider APIs (see CLAUDE.md guardrail 4)")
 	}
 
 	url := *dsn
@@ -105,16 +107,26 @@ func run() error {
 		}
 	}
 
-	raw, err := snapshot.LoadRawJSON(*fromSnapshot)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "snapshot: %d resources from %s\n", raw.Total(), *fromSnapshot)
-
 	start := time.Now()
-	report, err := ingest.ImportSnapshot(ctx, st, raw)
-	if err != nil {
-		return err
+
+	var report ingest.Report
+	if *fromSnapshot != "" {
+		raw, err := snapshot.LoadRawJSON(*fromSnapshot)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "snapshot: %d resources from %s\n", raw.Total(), *fromSnapshot)
+
+		report, err = ingest.ImportSnapshot(ctx, st, raw)
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		report, err = runLiveImport(ctx, st, *from, *to)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "%s (%s)\n", report, time.Since(start).Round(time.Millisecond))
@@ -145,4 +157,93 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "verdicts: %v\n", health.ByReconStatus)
 
 	return nil
+}
+
+// runLiveImport reaches the real provider APIs. Only called behind --live.
+//
+// Ticket Tailor is always a FULL RESYNC: CLAUDE.md is explicit that a
+// created_at watermark misses refunds posted against old orders, and there is no
+// way to detect that omission afterwards.
+func runLiveImport(ctx context.Context, st *store.Store, from, to string) (ingest.Report, error) {
+	var report ingest.Report
+
+	cfg, err := config.Load("TT_API_KEY", "PAYPAL_CLIENT_ID", "PAYPAL_SECRET")
+	if err != nil {
+		return report, err
+	}
+
+	if !cfg.PayPal.Sandbox {
+		fmt.Fprintln(os.Stderr,
+			"WARNING: PAYPAL_SANDBOX is false — this will read SSG's live PayPal account")
+	}
+	// Ticket Tailor has no sandbox at all, so there is no equivalent warning to
+	// suppress: any key reaching here is live.
+	fmt.Fprintln(os.Stderr,
+		"WARNING: Ticket Tailor has no sandbox; this reads a live account")
+
+	ttStart := time.Now()
+
+	ttClient := importer.NewTicketTailorClient(ticketTailorBaseURL, cfg.TicketTailor.APIKey)
+	ttReport, err := importer.ImportTicketTailor(ctx, ttClient, st)
+	if err != nil {
+		return report, err
+	}
+	fmt.Fprintf(os.Stderr, "ticket tailor: %s (%s)\n",
+		ttReport, time.Since(ttStart).Round(time.Millisecond))
+
+	start, end, err := payPalWindow(from, to)
+	if err != nil {
+		return report, err
+	}
+	fmt.Fprintf(os.Stderr, "paypal window: %s to %s\n",
+		start.Format("2006-01-02"), end.Format("2006-01-02"))
+
+	ppStart := time.Now()
+	ppClient := importer.NewPayPalClient(cfg.PayPal.BaseURL(),
+		cfg.PayPal.ClientID, cfg.PayPal.Secret)
+	ppReport, err := importer.ImportPayPal(ctx, ppClient, st, start, end)
+	if err != nil {
+		return report, err
+	}
+	fmt.Fprintf(os.Stderr, "paypal: %s (%s)\n",
+		ppReport, time.Since(ppStart).Round(time.Millisecond))
+
+	report.Read = ttReport.Read + ppReport.Read
+	report.Outcomes = map[store.Outcome]int{}
+	for k, v := range ttReport.Outcomes {
+		report.Outcomes[k] += v
+	}
+	for k, v := range ppReport.Outcomes {
+		report.Outcomes[k] += v
+	}
+	return report, nil
+}
+
+const ticketTailorBaseURL = "https://api.tickettailor.com/v1"
+
+// payPalWindow defaults to the widest range Transaction Search will serve.
+func payPalWindow(from, to string) (time.Time, time.Time, error) {
+	end := time.Now().UTC()
+	if to != "" {
+		t, err := time.Parse("2006-01-02", to)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("--to: %w", err)
+		}
+		end = t
+	}
+
+	// Transaction Search only retains about three years.
+	start := end.AddDate(-3, 0, 0)
+	if from != "" {
+		t, err := time.Parse("2006-01-02", from)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("--from: %w", err)
+		}
+		start = t
+	}
+
+	if !start.Before(end) {
+		return time.Time{}, time.Time{}, fmt.Errorf("--from must be before --to")
+	}
+	return start, end, nil
 }
