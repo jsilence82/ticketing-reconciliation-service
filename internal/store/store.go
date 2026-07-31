@@ -23,6 +23,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -96,4 +97,56 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// NewScratch opens a Store on a freshly created, migrated, throwaway schema and
+// returns a cleanup that drops it.
+//
+// Intended for tests, but deliberately free of the `testing` package so it does
+// not link into production binaries and can be called from any package's tests
+// without an import cycle.
+func NewScratch(ctx context.Context, dsn, schema string) (*Store, func(), error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse DATABASE_URL: %w", err)
+	}
+
+	bootstrap, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bootstrap pool: %w", err)
+	}
+	if _, err := bootstrap.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		bootstrap.Close()
+		return nil, nil, fmt.Errorf("create schema %s: %w", schema, err)
+	}
+	bootstrap.Close()
+
+	// Set on the connection config so connections opened later, as the pool
+	// grows, also land in this schema.
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pool: %w", err)
+	}
+
+	s := NewWithPool(pool)
+	if _, err := s.Migrate(ctx); err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("migrate: %w", err)
+	}
+
+	cleanup := func() {
+		pool.Close()
+		c, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		drop, err := pgxpool.New(c, dsn)
+		if err != nil {
+			return
+		}
+		defer drop.Close()
+		_, _ = drop.Exec(c, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+	}
+
+	return s, cleanup, nil
 }
