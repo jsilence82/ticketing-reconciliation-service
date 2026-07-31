@@ -22,6 +22,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -31,6 +32,7 @@ import (
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/snapshot"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/worker"
 )
 
 var version = "dev"
@@ -51,6 +53,9 @@ func run() error {
 		dsn = flag.String("database-url", "",
 			"Postgres connection string (default: $DATABASE_URL)")
 		migrateFirst = flag.Bool("migrate", true, "apply pending migrations before importing")
+		reconcile    = flag.Bool("reconcile", true,
+			"run a reconcile pass after importing, so a backfill is self-contained "+
+				"and does not have to wait on a worker poll tick")
 	)
 	flag.Parse()
 
@@ -114,11 +119,30 @@ func run() error {
 
 	fmt.Fprintf(os.Stderr, "%s (%s)\n", report, time.Since(start).Round(time.Millisecond))
 
+	if *reconcile {
+		w := worker.New(st, worker.DefaultConfig(),
+			slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+		processed, failed, err := w.DrainStageOne(ctx)
+		if err != nil {
+			return fmt.Errorf("validate: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "validated %d rows (%d failed)\n", processed, failed)
+
+		res, err := w.Reconcile(ctx, time.Time{})
+		if err != nil {
+			return fmt.Errorf("reconcile: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "reconciled %d resources, %d verdicts changed\n",
+			res.Resources, res.Changed)
+	}
+
 	health, err := st.Health(ctx)
 	if err != nil {
 		return fmt.Errorf("health: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "stored by status: %v\n", health.ByStatus)
+	fmt.Fprintf(os.Stderr, "verdicts: %v\n", health.ByReconStatus)
 
 	return nil
 }

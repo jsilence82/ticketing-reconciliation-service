@@ -269,13 +269,29 @@ type Verdict struct {
 	CounterpartID string
 }
 
-// WriteVerdicts persists a reconcile pass's output in one statement.
+// verdictSQL is shared by the pooled and transactional paths so the two cannot
+// drift. One statement for the whole pass, not a round trip per row.
 //
 // The IS DISTINCT FROM guard is load-bearing, not an optimisation. A pass that
 // changes nothing must write zero rows, so that updated_at keeps meaning "state
-// actually changed". The worker's dirty-watermark trigger is derived from
-// max(updated_at); without this guard every pass would touch every row, which
-// would re-trigger the next pass, and the loop would never settle.
+// actually changed". The worker's trigger is derived from max(updated_at);
+// without this guard every pass would touch every row, which would re-trigger
+// the next pass, and the loop would never settle.
+const verdictSQL = `
+UPDATE events e
+   SET recon_status         = v.recon_status,
+       recon_counterpart_id = v.counterpart_id,
+       recon_run_id         = $1::uuid,
+       updated_at           = now()
+  FROM (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]))
+        AS v(source, resource_id, recon_status, counterpart_id)
+ WHERE e.source = v.source
+   AND e.resource_id = v.resource_id
+   AND (e.recon_status, e.recon_counterpart_id)
+       IS DISTINCT FROM (v.recon_status, v.counterpart_id)`
+
+// WriteVerdicts persists verdicts outside a reconcile pass. The pass itself
+// uses store.Reconcile, which does the same write inside its transaction.
 func (s *Store) WriteVerdicts(ctx context.Context, runID string, vs []Verdict) (int64, error) {
 	if len(vs) == 0 {
 		return 0, nil
@@ -292,19 +308,7 @@ func (s *Store) WriteVerdicts(ctx context.Context, runID string, vs []Verdict) (
 		counterparts[i] = v.CounterpartID
 	}
 
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE events e
-		   SET recon_status         = v.recon_status,
-		       recon_counterpart_id = v.counterpart_id,
-		       recon_run_id         = $1::uuid,
-		       updated_at           = now()
-		  FROM (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]))
-		        AS v(source, resource_id, recon_status, counterpart_id)
-		 WHERE e.source = v.source
-		   AND e.resource_id = v.resource_id
-		   AND (e.recon_status, e.recon_counterpart_id)
-		       IS DISTINCT FROM (v.recon_status, v.counterpart_id)`,
-		runID, sources, ids, statuses, counterparts)
+	tag, err := s.pool.Exec(ctx, verdictSQL, runID, sources, ids, statuses, counterparts)
 	if err != nil {
 		return 0, fmt.Errorf("write verdicts: %w", err)
 	}

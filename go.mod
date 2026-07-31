@@ -2,7 +2,10 @@ module github.com/jsilence82/ticketing-reconciliation-service
 
 go 1.26.4
 
-require github.com/jackc/pgx/v5 v5.10.0
+require (
+	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/jackc/pgx/v5 v5.10.0
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
