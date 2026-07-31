@@ -87,6 +87,16 @@ type querier interface {
 }
 
 func upsertOn(ctx context.Context, q querier, rec model.EventRecord) (Outcome, error) {
+	// Last line of defence. internal/ingest already reduces payloads to an
+	// allowlist, so this is duplication — and that is the point: it turns
+	// "someone added a write path that skipped Sanitize" into a hard failure
+	// rather than a leak that is only discovered by reading the table.
+	// One recursive walk over a few KB, microseconds.
+	if err := model.ScanForPII(rec.Payload, model.PIIExemptions(rec.ResourceType)); err != nil {
+		return "", fmt.Errorf("refusing to store %s/%s: %w",
+			rec.Source, rec.ResourceID, err)
+	}
+
 	sum := sha256.Sum256(rec.Payload)
 
 	var inserted bool
