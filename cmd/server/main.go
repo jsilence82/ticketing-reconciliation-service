@@ -1,14 +1,14 @@
-// Command server runs the reconciliation worker, and eventually the read-only
-// query API.
+// Command server runs the reconciliation worker and the read-only query API.
 //
-// The worker is live as of P2.5. The HTTP surface is P3, and webhook ingestion
-// is P4 — CLAUDE.md guardrail 1 forbids pointing this service at live webhook
-// subscriptions until its output has been diffed against the dashboard, which
-// `make parity-db` now does.
+// Webhook ingestion is P4 — CLAUDE.md guardrail 1 forbids pointing this service
+// at live webhook subscriptions until its output has been diffed against the
+// dashboard, which `make parity-db` does.
 //
-// Running this against a database that a backfill has populated is enough to
-// keep verdicts current: the worker validates new rows and re-reconciles when
-// the input changes.
+// # Two database connections, on purpose
+//
+// The worker writes; the API must not. They therefore use separate pools with
+// separate roles, and the API's is verified read-only at startup rather than
+// trusted. See deploy/readonly-role.sql.
 package main
 
 import (
@@ -17,10 +17,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/api"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/worker"
@@ -40,28 +43,32 @@ func run() error {
 		dsn          = flag.String("database-url", "", "Postgres connection string (default: $DATABASE_URL)")
 		migrateFirst = flag.Bool("migrate", true, "apply pending migrations at startup")
 		pollInterval = flag.Duration("poll", 0, "worker poll interval (default: 30s)")
-		once         = flag.Bool("once", false, "run a single tick and exit, instead of looping")
+		once         = flag.Bool("once", false, "run a single worker tick and exit")
+		noAPI        = flag.Bool("no-api", false, "run only the worker, without the HTTP listener")
+		insecureAPI  = flag.Bool("insecure-allow-writable-api", false,
+			"skip the read-only proof for the API's database role (development only)")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	log.Info("starting", "version", version)
 
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
 	url := *dsn
 	if url == "" {
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
 		url = cfg.DatabaseURL
 	}
 	if url == "" {
 		return errors.New("no database: pass --database-url or set DATABASE_URL")
 	}
 
-	// SIGTERM is how Compose stops a container. Cancelling here lets the worker
-	// finish its current tick rather than being killed mid-transaction; rows it
-	// had claimed would otherwise wait for the reaper.
+	// SIGTERM is how Compose stops a container. Cancelling lets the worker
+	// finish its tick and the listener drain, rather than being killed
+	// mid-transaction.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -81,11 +88,11 @@ func run() error {
 		}
 	}
 
-	cfg := worker.DefaultConfig()
+	workerCfg := worker.DefaultConfig()
 	if *pollInterval > 0 {
-		cfg.PollInterval = *pollInterval
+		workerCfg.PollInterval = *pollInterval
 	}
-	w := worker.New(st, cfg, log)
+	w := worker.New(st, workerCfg, log)
 
 	if *once {
 		res, err := w.Tick(ctx)
@@ -99,7 +106,105 @@ func run() error {
 		return nil
 	}
 
-	// No HTTP listener yet, so nothing to shut down beyond the worker loop.
-	// P3 adds the query API alongside this.
-	return w.Run(ctx)
+	if *noAPI {
+		return w.Run(ctx)
+	}
+
+	srv, apiStore, err := buildAPI(ctx, cfg, url, log, *insecureAPI)
+	if err != nil {
+		return err
+	}
+	if apiStore != nil {
+		defer apiStore.Close()
+	}
+
+	httpSrv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           srv.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", httpSrv.Addr)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	go func() {
+		if err := w.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+	}
+
+	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdown); err != nil {
+		log.Error("http shutdown", "err", err)
+	}
+	log.Info("stopped")
+	return nil
+}
+
+// buildAPI wires the query API on its own read-only pool.
+//
+// Returns the store so the caller can close it.
+func buildAPI(
+	ctx context.Context, cfg *config.Config, writeURL string, log *slog.Logger, insecure bool,
+) (*api.Server, *store.Store, error) {
+	consumers, err := api.ParseConsumers(cfg.APIKeys)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(consumers) == 0 {
+		// Reconciliation data is buyer-payment mapping. A service that serves it
+		// to anyone because its configuration is missing is the failure worth
+		// engineering against, so this is fatal rather than a warning.
+		return nil, nil, errors.New(
+			"API_KEYS is empty: the query API would have no way to authenticate " +
+				"anyone. Set API_KEYS, or pass --no-api to run the worker alone")
+	}
+
+	// A dedicated read-only role is the enforcement guardrail 3 asks for.
+	// Sharing the worker's writable role is a development convenience and has to
+	// be asked for explicitly.
+	readOnly := cfg.APIDatabaseURL != ""
+	target := cfg.APIDatabaseURL
+
+	if !readOnly {
+		if !insecure {
+			return nil, nil, errors.New(
+				"API_DATABASE_URL is unset. Guardrail 3 requires the query API to " +
+					"use a SELECT-only role (see deploy/readonly-role.sql). Pass " +
+					"--insecure-allow-writable-api to override in development")
+		}
+		log.Warn("API is sharing the worker's writable database role; " +
+			"guardrail 3 is NOT enforced in this process")
+		target = writeURL
+	}
+
+	st, err := store.New(ctx, target)
+	if err != nil {
+		return nil, nil, fmt.Errorf("api database: %w", err)
+	}
+
+	srv := api.New(st, consumers, log)
+
+	if readOnly {
+		// Prove it rather than trust it. A role that can write is a boot failure.
+		if err := srv.VerifyReadOnly(ctx); err != nil {
+			st.Close()
+			return nil, nil, err
+		}
+	}
+
+	log.Info("query API configured", "consumers", len(consumers), "read_only", readOnly)
+	return srv, st, nil
 }

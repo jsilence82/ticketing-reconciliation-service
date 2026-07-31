@@ -20,8 +20,23 @@ type Config struct {
 	// Port is the HTTP listen port. Defaults to 8080.
 	Port int
 
-	// DatabaseURL is the Postgres connection string.
+	// DatabaseURL is the Postgres connection string used by the worker, which
+	// writes.
 	DatabaseURL string
+
+	// APIDatabaseURL is the connection string the read-only query API uses.
+	//
+	// Deliberately separate from DatabaseURL: guardrail 3 requires that no
+	// endpoint be able to mutate state, and the way to guarantee that is a role
+	// with SELECT only (see deploy/readonly-role.sql). The server proves the
+	// role really is read-only at startup rather than assuming it.
+	APIDatabaseURL string
+
+	// APIKeys is "name:key,name:key" — one key per consumer, so a single
+	// caller can be revoked without rotating everyone. Reconciliation data is
+	// restricted to whoever handles SSG finances, which a shared secret cannot
+	// express.
+	APIKeys string
 
 	// TicketTailor holds Ticket Tailor API credentials.
 	TicketTailor TicketTailorConfig
@@ -80,9 +95,11 @@ func (e *MissingError) Error() string {
 // never use.
 func Load(required ...string) (*Config, error) {
 	cfg := &Config{
-		Port:          8080,
-		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		ParityDataDir: os.Getenv("SSG_PARITY_DATA"),
+		Port:           8080,
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		APIDatabaseURL: os.Getenv("API_DATABASE_URL"),
+		APIKeys:        os.Getenv("API_KEYS"),
+		ParityDataDir:  os.Getenv("SSG_PARITY_DATA"),
 		TicketTailor: TicketTailorConfig{
 			APIKey:        os.Getenv("TT_API_KEY"),
 			WebhookSecret: os.Getenv("TT_WEBHOOK_SECRET"),
@@ -126,6 +143,8 @@ func Load(required ...string) (*Config, error) {
 func (c *Config) require(names []string) error {
 	lookup := map[string]string{
 		"DATABASE_URL":      c.DatabaseURL,
+		"API_DATABASE_URL":  c.APIDatabaseURL,
+		"API_KEYS":          c.APIKeys,
 		"SSG_PARITY_DATA":   c.ParityDataDir,
 		"TT_API_KEY":        c.TicketTailor.APIKey,
 		"TT_WEBHOOK_SECRET": c.TicketTailor.WebhookSecret,

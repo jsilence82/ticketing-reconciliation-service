@@ -101,16 +101,19 @@ func (s *Store) GetEvent(ctx context.Context, id string) (model.EventRecord, err
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+eventColumns+` FROM events e WHERE e.id = $1`, id)
 	if err != nil {
-		return model.EventRecord{}, fmt.Errorf("get event: %w", err)
+		return model.EventRecord{}, translate(err)
 	}
 	defer rows.Close()
 
+	// pgx can defer a parameter error to row iteration rather than raising it at
+	// Query time, so this path needs translating too — a malformed uuid arrives
+	// here, not above.
 	recs, err := scanEvents(rows)
 	if err != nil {
-		return model.EventRecord{}, err
+		return model.EventRecord{}, translate(err)
 	}
 	if len(recs) == 0 {
-		return model.EventRecord{}, pgx.ErrNoRows
+		return model.EventRecord{}, ErrNotFound
 	}
 	return recs[0], nil
 }
@@ -185,7 +188,7 @@ func (s *Store) ListEvents(ctx context.Context, f ListFilter) (Page, error) {
 
 	recs, err := scanEvents(rows)
 	if err != nil {
-		return Page{}, err
+		return Page{}, translate(err)
 	}
 
 	page := Page{Events: recs}
@@ -248,15 +251,15 @@ func encodeCursor(at time.Time, id string) string {
 func decodeCursor(s string) (time.Time, string, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
-		return time.Time{}, "", fmt.Errorf("invalid cursor: %w", err)
+		return time.Time{}, "", fmt.Errorf("%w: %w", ErrInvalidCursor, err)
 	}
 	parts := strings.SplitN(string(raw), "|", 2)
 	if len(parts) != 2 {
-		return time.Time{}, "", fmt.Errorf("invalid cursor: malformed")
+		return time.Time{}, "", fmt.Errorf("%w: malformed", ErrInvalidCursor)
 	}
 	at, err := time.Parse(time.RFC3339Nano, parts[0])
 	if err != nil {
-		return time.Time{}, "", fmt.Errorf("invalid cursor timestamp: %w", err)
+		return time.Time{}, "", fmt.Errorf("%w: bad timestamp: %w", ErrInvalidCursor, err)
 	}
 	return at, parts[1], nil
 }
@@ -273,4 +276,37 @@ func nilIfZero(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+// ProbeWritable reports whether this store's role can INSERT.
+//
+// It exists so the API can PROVE its connection is read-only rather than trust
+// configuration (guardrail 3). The write is attempted inside a transaction that
+// is always rolled back, so even a misconfigured role leaves nothing behind.
+//
+// Returns (true, nil) when the write succeeded — meaning the role is too
+// privileged for the API to use. Returns (false, nil) when Postgres refused on
+// permission grounds. Any other failure is returned as an error rather than
+// being mistaken for proof of safety.
+func (s *Store) ProbeWritable(ctx context.Context) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("writability probe: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO events (source, resource_type, resource_id, origin, status,
+		                    payload, payload_hash, occurred_at)
+		VALUES ('paypal','paypal_transaction','__readonly_probe__','backfill',
+		        'received','{}'::jsonb,'\x00'::bytea, now())`)
+
+	switch {
+	case err == nil:
+		return true, nil
+	case isPermissionDenied(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("writability probe failed unexpectedly: %w", err)
+	}
 }
