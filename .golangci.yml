@@ -34,6 +34,21 @@ linters:
             - pkg: "github.com/jsilence82/ticketing-reconciliation-service/internal/store"
               desc: "internal/recon must not depend on the store package"
 
+        # CLAUDE.md: internal/store is "the ONLY package containing SQL".
+        # Denying the driver everywhere else turns that from a comment into a
+        # build failure, so a query cannot quietly appear in a handler.
+        # cmd/ is exempt because binaries construct the pool and pass it in.
+        sql-lives-in-store:
+          files:
+            - "$all"
+            - "!**/internal/store/**"
+            - "!**/cmd/**"
+          deny:
+            - pkg: "github.com/jackc/pgx"
+              desc: "only internal/store may hold SQL; take a store method instead"
+            - pkg: "database/sql"
+              desc: "only internal/store may hold SQL; take a store method instead"
+
     revive:
       rules:
         - name: exported
