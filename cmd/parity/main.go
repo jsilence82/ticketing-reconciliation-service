@@ -23,6 +23,7 @@ import (
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon/oracle"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/snapshot"
 )
 
@@ -68,6 +69,20 @@ type outputJSON struct {
 	TxnCount    int                 `json:"txn_count"`
 	Shows       []string            `json:"shows"`
 	Results     map[string]showJSON `json:"results"`
+
+	// Classification is the service's ACTUAL product, reported here for
+	// visibility. It is show-agnostic and has no Python counterpart, so
+	// compare.py ignores it — the reference has no per-resource verdict to diff
+	// against.
+	Classification *classificationJSON `json:"classification,omitempty"`
+}
+
+type classificationJSON struct {
+	Matched       int `json:"matched"`
+	Unmatched     int `json:"unmatched"`
+	Transferred   int `json:"transferred"`
+	Pending       int `json:"pending"`
+	NotApplicable int `json:"not_applicable"`
 }
 
 // hexf renders a float the way Python's float.hex() does.
@@ -128,7 +143,7 @@ func main() {
 
 	results := make(map[string]showJSON, len(shows))
 	for _, show := range shows {
-		res, err := recon.Build(snap.Tickets, snap.Txns, show, flags)
+		res, err := oracle.Build(snap.Tickets, snap.Txns, show, flags)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "reconcile %q: %v\n", show, err)
 			os.Exit(1)
@@ -136,12 +151,23 @@ func main() {
 		results[show] = toJSON(res)
 	}
 
+	// Classify runs once over everything, not per show: a resource's verdict
+	// cannot depend on which show a caller happened to ask about.
+	counts := recon.Summarise(recon.Classify(snap.Tickets, snap.Txns, flags))
+
 	payload := outputJSON{
 		Env:         map[string]string{"go": version, "impl": "go"},
 		RecordCount: len(snap.Tickets),
 		TxnCount:    len(snap.Txns),
 		Shows:       shows,
 		Results:     results,
+		Classification: &classificationJSON{
+			Matched:       counts.Matched,
+			Unmatched:     counts.Unmatched,
+			Transferred:   counts.Transferred,
+			Pending:       counts.Pending,
+			NotApplicable: counts.NotApplicable,
+		},
 	}
 
 	enc, err := json.MarshalIndent(payload, "", " ")
@@ -160,9 +186,12 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "%d records, %d transactions, %d shows\n",
 		len(snap.Tickets), len(snap.Txns), len(shows))
+	fmt.Fprintf(os.Stderr,
+		"classification: %d matched, %d unmatched, %d transferred, %d pending\n",
+		counts.Matched, counts.Unmatched, counts.Transferred, counts.Pending)
 }
 
-func toJSON(res recon.Result) showJSON {
+func toJSON(res oracle.Result) showJSON {
 	out := showJSON{
 		Totals:     totalsJSON{Rows: []totalsRowJSON{}},
 		Statistics: statsJSON{Rows: []statsRowJSON{}, Categories: []string{}},

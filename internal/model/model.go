@@ -1,10 +1,18 @@
 // Package model holds the domain types shared by the reconciliation engine and
-// the projection layer.
+// the storage layer.
 //
-// These types deliberately contain no buyer PII. The dashboard's canonical
-// frame carries email/buyer_name/buyer_id for its repeat-buyer analysis, but
-// reconciliation Totals and Statistics never read them, and omitting them
-// shrinks the blast radius of the access-control requirement in CLAUDE.md.
+// These types deliberately contain no buyer PII. The dashboard's canonical frame
+// carries email/buyer_name/buyer_id for its repeat-buyer analysis, but
+// reconciliation never reads them, and omitting them shrinks the blast radius of
+// the access-control requirement in CLAUDE.md.
+//
+// # Storage shape
+//
+// There is exactly one persisted table, `events`, holding one row per real-world
+// resource keyed on (source, resource_id). There is NO projection/derived-table
+// layer — an earlier design had one and it was deliberately removed. The joined
+// CanonicalTicket below is assembled at READ time (see assemble.go), never
+// stored.
 package model
 
 import "time"
@@ -18,37 +26,155 @@ const (
 	SourceTicketTailor Source = "tickettailor"
 )
 
-// Provenance ranks how much a write is trusted when two writes race. Higher
-// wins. See the projection layer in CLAUDE.md: a slow backfill page must never
-// clobber a fresh webhook.
-type Provenance int16
+// Origin records how a row was obtained. It doubles as the tie-breaker in the
+// version-ordered upsert: a webhook outranks a backfill page carrying an older
+// snapshot of the same resource.
+type Origin string
 
-// Provenance ranks, lowest to highest trust. A backfill page carrying stale
-// state must never overwrite a fresher webhook, so ordering matters more than
-// the specific values.
+// The ingestion paths. Both write to the same table and converge on the same
+// worker; only acquisition and verification differ.
 const (
-	ProvenanceBackfill   Provenance = 1
-	ProvenanceRESTRepair Provenance = 2
-	ProvenanceWebhook    Provenance = 3
+	OriginWebhook  Origin = "webhook"
+	OriginBackfill Origin = "backfill"
 )
 
-// Version carries the ordering tuple every projection row is upserted with.
-// SourceVersion is the PROVIDER's timestamp, never our receive time.
-type Version struct {
-	SourceVersion time.Time
-	SourceRank    Provenance
-	IngestSeq     int64
-	ContentHash   []byte
+// Rank returns the provenance precedence used to break ties when two writes
+// carry the same occurred_at. Higher wins, so a slow backfill can never clobber
+// fresher webhook state.
+func (o Origin) Rank() int {
+	if o == OriginWebhook {
+		return 1
+	}
+	return 0
 }
 
-// CanonicalTicket mirrors the output of the dashboard's mapping.build_canonical,
-// field for field, at one-issued-ticket grain.
+// ResourceType names what kind of thing a row is about.
 //
-// The production column mapping is frozen (see docs/PARITY.md); this struct is
-// the Go shape of its result. Fields prefixed Order* correspond to the
-// underscore-prefixed internals the dashboard joins on from TT orders — they
-// are not user-mapped.
+// The events table holds four Ticket Tailor resource types plus PayPal
+// transactions, not just orders. Ticket Tailor supplies this directly as the
+// payload's `object` field; for PayPal it is derived from the webhook topic.
+//
+// Without it you cannot express "give me all issued tickets", and the unique
+// constraint would be relying on Ticket Tailor's id prefixes (or_, it_, ev_,
+// es_) never colliding — true today, but not a property to depend on.
+type ResourceType string
+
+// The resource types this service ingests.
+const (
+	ResourceOrder             ResourceType = "order"
+	ResourceIssuedTicket      ResourceType = "issued_ticket"
+	ResourceEvent             ResourceType = "event"
+	ResourceEventSeries       ResourceType = "event_series"
+	ResourcePayPalTransaction ResourceType = "paypal_transaction"
+	// ResourceOther covers ingested-but-not-reconciled payloads such as
+	// waitlist_signup, which are stored with status `ignored`.
+	ResourceOther ResourceType = "other"
+)
+
+// ReconStatus is the verdict this service exists to produce and store.
+//
+// It means different things per ResourceType, which is a deliberate choice
+// rather than an accident: a PayPal transaction is matched or unmatched, whereas
+// `transferred` is a property of a Ticket Tailor ticket (voided there, but the
+// PayPal charge stands and no refund was issued).
+type ReconStatus string
+
+// The per-resource reconciliation verdicts.
+const (
+	// ReconMatched: a PayPal transaction with a corresponding Ticket Tailor
+	// order, or a refund linked back to its original charge.
+	ReconMatched ReconStatus = "matched"
+
+	// ReconUnmatched: a PayPal transaction with no Ticket Tailor counterpart.
+	// The business contract requires these be surfaced, never discarded.
+	ReconUnmatched ReconStatus = "unmatched"
+
+	// ReconTransferred: a Ticket Tailor ticket voided with no refund, where the
+	// PayPal charge remains valid. Must be flagged, not silently dropped.
+	ReconTransferred ReconStatus = "transferred"
+
+	// ReconPending: a refund whose link to its original charge is not yet
+	// resolved. PayPal webhooks omit paypal_reference_id, so it must be fetched.
+	// Never guess it — an unresolved refund silently understates a night's net.
+	ReconPending ReconStatus = "pending"
+
+	// ReconNotApplicable: the resource carries no reconciliation verdict, e.g.
+	// an event or an ordinary non-voided ticket.
+	ReconNotApplicable ReconStatus = "not_applicable"
+)
+
+// EventRecord is one row of the `events` table — the only persisted state.
+//
+// The unique constraint is (Source, ResourceID). Multiple deliveries about one
+// resource collapse into this single row: the table is latest-state-per-resource,
+// not an append-only delivery log.
+type EventRecord struct {
+	ID string
+
+	Source       Source
+	ResourceType ResourceType
+	// ResourceID is the underlying resource's own ID — a PayPal transaction or
+	// capture ID, or a Ticket Tailor order/ticket/event/series ID. NOT the
+	// webhook envelope's notification ID: backfilled rows have no notification,
+	// so keying on it would stop the two ingestion paths from recognising the
+	// same real-world resource.
+	ResourceID string
+
+	// WebhookNotificationID is set only for webhook-ingested rows, purely to
+	// debug delivery-level duplication.
+	WebhookNotificationID string
+
+	Origin Origin
+	Topic  string
+	Status string
+
+	Payload []byte
+
+	// OccurredAt is the PROVIDER's timestamp, and the primary ordering key for
+	// the upsert. Never our receive time — ordering on receive time is what lets
+	// a late delivery overwrite fresher state.
+	OccurredAt time.Time
+
+	// ReconStatus and ReconCounterpartID hold the verdict produced by
+	// recon.Classify. This is the service's actual product.
+	ReconStatus        ReconStatus
+	ReconCounterpartID string
+
+	RetryCount int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// IsNewerThan reports whether e should overwrite prev in the version-ordered
+// upsert: strictly newer by the provider's clock, or equal-but-better-sourced.
+//
+// This mirrors the SQL guard in CLAUDE.md and exists so the same rule can be
+// unit-tested without a database.
+func (e EventRecord) IsNewerThan(prev EventRecord) bool {
+	if e.OccurredAt.After(prev.OccurredAt) {
+		return true
+	}
+	if e.OccurredAt.Equal(prev.OccurredAt) {
+		return e.Origin.Rank() > prev.Origin.Rank()
+	}
+	return false
+}
+
+// CanonicalTicket is the joined, one-row-per-issued-ticket shape the matching
+// rule operates on. It mirrors the output of the dashboard's
+// mapping.build_canonical field for field.
+//
+// It is NOT a stored table. With no projection layer, it is assembled at read
+// time from `events` rows — ticket joined to its order (for the PayPal
+// transaction ID, payment type and refund amount) and to its event (for the
+// performance date). See Assemble.
 type CanonicalTicket struct {
+	// TicketID and OrderID identify the underlying resources. The reconciliation
+	// maths never reads them, but the classification output needs to name which
+	// resource a verdict belongs to.
+	TicketID string
+	OrderID  string
+
 	// Show is mapped from the joined event name.
 	Show string
 	// Category is mapped from the ticket type description. It becomes a column
@@ -127,64 +253,56 @@ type PayPalTxn struct {
 	// It is the second half of the matching rule. Transaction Search supplies it
 	// directly; webhooks do not, and it must be resolved from the refund's
 	// links. An unresolved value silently drops the refund from a night's
-	// Totals, so it must never be guessed.
+	// figures, so it must never be guessed — classify it ReconPending instead.
 	PayPalReferenceID string
-
-	// ReferenceState tracks whether PayPalReferenceID has been resolved.
-	ReferenceState ReferenceState
 
 	// Currency is captured even though the reference ignores it and labels all
 	// output in euro.
 	Currency string
 }
 
-// ReferenceState records whether a refund has been linked to its original charge.
-type ReferenceState string
+// IsRefund reports whether the transaction moves money back to the buyer.
+//
+// The reference detects refunds by sign rather than by status
+// (sections/reconciliation.py:191), and that is reproduced here.
+func (t PayPalTxn) IsRefund() bool { return t.Gross < 0 }
 
-const (
-	// ReferenceNotApplicable is used for non-refund transactions.
-	ReferenceNotApplicable ReferenceState = ""
-	// ReferenceResolved means PayPalReferenceID is trustworthy.
-	ReferenceResolved ReferenceState = "resolved"
-	// ReferencePending means the link is not yet known. Alert if it persists.
-	ReferencePending ReferenceState = "pending"
-)
-
-// TTOrder is the projection of a Ticket Tailor order. It carries the match key.
+// TTOrder is a Ticket Tailor order as stored in `events`. It carries the match
+// key.
 type TTOrder struct {
 	ID string
 	// TxnID is the order's PayPal transaction id — the reconciliation match key.
 	TxnID             string
 	PaymentMethodType string
-	RefundAmountMinor int64
+	RefundAmount      float64
 	TotalPaidMinor    int64
 	Currency          string
 	Status            string
 	CreatedAt         time.Time
-	Version           Version
 }
 
-// TTIssuedTicket is the projection of a Ticket Tailor issued ticket. This is
+// TTIssuedTicket is a Ticket Tailor issued ticket as stored in `events`. This is
 // the grain of the canonical frame.
 type TTIssuedTicket struct {
 	ID string
 	// OrderID may reference an order this service has not yet received. That is
-	// not an error state: the reconciliation read is a LEFT JOIN, which
-	// reproduces what the reference's pandas map+fillna does for a missing key.
+	// not an error state: the read-time join is a LEFT JOIN, reproducing what
+	// the reference's pandas map+fillna does for a missing key.
 	OrderID       string
 	EventID       string
 	EventSeriesID string
 	TicketTypeID  string
-	Category      string
-	Status        string
-	PriceMinor    int64
-	Currency      string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	Version       Version
+	// Description is the ticket type description, which the production column
+	// mapping binds to the canonical `category`.
+	Description string
+	Status      string
+	PriceMinor  int64
+	Currency    string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
-// TTEvent is the projection of a Ticket Tailor event — one performance.
+// TTEvent is a Ticket Tailor event — one performance.
 type TTEvent struct {
 	ID            string
 	EventSeriesID string
@@ -197,16 +315,6 @@ type TTEvent struct {
 	// DeletedAt tombstones the event. A tombstoned event must behave exactly
 	// like a missing one, not be hard-deleted.
 	DeletedAt *time.Time
-	Version   Version
-}
-
-// TTEventSeries is the projection of a Ticket Tailor event series — a show.
-type TTEventSeries struct {
-	ID                   string
-	Name                 string
-	TicketsAvailableAt   *time.Time
-	TicketsUnavailableAt *time.Time
-	Version              Version
 }
 
 // Start returns the event start as a UTC time. The reference formats night

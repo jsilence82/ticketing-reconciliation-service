@@ -1,4 +1,4 @@
-package recon
+package oracle
 
 import (
 	"os"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon"
 )
 
 // The behavior ledger in docs/PARITY.md enumerates the reference
@@ -29,6 +30,8 @@ func date(day int) time.Time {
 // ticket builds a valid, PayPal-paid, one-unit ticket on the given night.
 func ticket(txnID string, day int, opts ...func(*model.CanonicalTicket)) model.CanonicalTicket {
 	t := model.CanonicalTicket{
+		TicketID:         "it_" + txnID + "_" + strconv.Itoa(day),
+		OrderID:          "or_" + txnID,
 		Show:             "Show",
 		Category:         "General",
 		Quantity:         1,
@@ -70,7 +73,7 @@ func refund(id, original string, gross, fee float64) model.PayPalTxn {
 	}
 }
 
-func mustBuild(t *testing.T, rows []model.CanonicalTicket, txns []model.PayPalTxn, f Flags) Result {
+func mustBuild(t *testing.T, rows []model.CanonicalTicket, txns []model.PayPalTxn, f recon.Flags) Result {
 	t.Helper()
 	res, err := Build(rows, txns, "", f)
 	if err != nil {
@@ -101,14 +104,14 @@ var ledgerCases = []ledgerCase{{
 		// TX9 has no Ticket Tailor counterpart: a genuinely orphaned charge.
 		txns := []model.PayPalTxn{charge("TX1", 10, -0.5), charge("TX9", 99, -3)}
 
-		res := mustBuild(t, rows, txns, Flags{})
+		res := mustBuild(t, rows, txns, recon.Flags{})
 		if len(res.Unmatched) != 0 {
 			t.Errorf("Unmatched = %d rows, want 0: the reference's predicate is the "+
 				"complement of the filter that built its own input", len(res.Unmatched))
 		}
 
 		// The orphan is real, and the fix flag surfaces it.
-		res = mustBuild(t, rows, txns, Flags{FixUnmatchedDetection: true})
+		res = mustBuild(t, rows, txns, recon.Flags{FixUnmatchedDetection: true})
 		if len(res.Unmatched) != 1 || res.Unmatched[0].TxnID != "TX9" {
 			t.Errorf("with fix: Unmatched = %+v, want exactly TX9", res.Unmatched)
 		}
@@ -122,7 +125,7 @@ var ledgerCases = []ledgerCase{{
 		rows := []model.CanonicalTicket{ticket("TX1", 1), ticket("TX1", 2)}
 		txns := []model.PayPalTxn{charge("TX1", 20, -1)}
 
-		res := mustBuild(t, rows, txns, Flags{})
+		res := mustBuild(t, rows, txns, recon.Flags{})
 		if len(res.Totals.Rows) != 2 {
 			t.Fatalf("got %d nights, want 2", len(res.Totals.Rows))
 		}
@@ -140,7 +143,7 @@ var ledgerCases = []ledgerCase{{
 				len(res.MatchedTxns))
 		}
 
-		res = mustBuild(t, rows, txns, Flags{FixCrossNightDoubleCount: true})
+		res = mustBuild(t, rows, txns, recon.Flags{FixCrossNightDoubleCount: true})
 		if res.Totals.Total.Gross != 20 {
 			t.Errorf("with fix: TOTAL gross = %v, want 20", res.Totals.Total.Gross)
 		}
@@ -157,7 +160,7 @@ var ledgerCases = []ledgerCase{{
 			refund("R2", "TX1", -20, 1.0),
 		}
 
-		res := mustBuild(t, rows, txns, Flags{})
+		res := mustBuild(t, rows, txns, recon.Flags{})
 		// Both refunds reach MatchedTxns, but only one is attributed to a night.
 		if got := len(res.MatchedTxns); got != 3 {
 			t.Fatalf("MatchedTxns = %d, want 3", got)
@@ -167,7 +170,7 @@ var ledgerCases = []ledgerCase{{
 				"the dict keyed on reference id collapses the other", got)
 		}
 
-		res = mustBuild(t, rows, txns, Flags{FixMultiRefund: true})
+		res = mustBuild(t, rows, txns, recon.Flags{FixMultiRefund: true})
 		if got := res.Totals.Rows[0].Transactions; got != 3 {
 			t.Errorf("with fix: night transactions = %d, want 3", got)
 		}
@@ -184,20 +187,20 @@ var ledgerCases = []ledgerCase{{
 
 		// Reference: returned is scaled UP by 100/10 = 10x -> 3.0.
 		// retained = 3.0 - 3.0 = 0.
-		if got := RetainedFee(part, byID, Flags{}); got != 0 {
-			t.Errorf("RetainedFee = %v, want 0 (fee scaled UP tenfold by the "+
+		if got := recon.RetainedFee(part, byID, recon.Flags{}); got != 0 {
+			t.Errorf("recon.RetainedFee = %v, want 0 (fee scaled UP tenfold by the "+
 				"inverted ratio)", got)
 		}
 
 		// Corrected: scaled DOWN by 10/100 -> 0.03; retained = 3.0 - 0.03.
-		if got := RetainedFee(part, byID, Flags{FixRetainedFeeRatio: true}); got != 2.97 {
-			t.Errorf("with fix: RetainedFee = %v, want 2.97", got)
+		if got := recon.RetainedFee(part, byID, recon.Flags{FixRetainedFeeRatio: true}); got != 2.97 {
+			t.Errorf("with fix: recon.RetainedFee = %v, want 2.97", got)
 		}
 
 		// A FULL refund does not trip the guard, so both agree.
 		full := refund("R2", "TX1", -100, 3.0)
-		a := RetainedFee(full, byID, Flags{})
-		b := RetainedFee(full, byID, Flags{FixRetainedFeeRatio: true})
+		a := recon.RetainedFee(full, byID, recon.Flags{})
+		b := recon.RetainedFee(full, byID, recon.Flags{FixRetainedFeeRatio: true})
 		if a != b || a != 0 {
 			t.Errorf("full refund: got %v and %v, want both 0", a, b)
 		}
@@ -210,13 +213,13 @@ var ledgerCases = []ledgerCase{{
 		for _, status := range []string{"refunded", "cancelled", "canceled", "refund"} {
 			rows := []model.CanonicalTicket{ticket("TX1", 1, withStatus(status))}
 
-			ids := PayPalIDsForShow(rows, Flags{})
+			ids := recon.PayPalIDsForShow(rows, recon.Flags{})
 			if len(ids) != 0 {
-				t.Errorf("status %q: ids = %v, want empty — Active excludes it and "+
+				t.Errorf("status %q: ids = %v, want empty — recon.Active excludes it and "+
 					"the void re-admission set does not cover it", status, ids)
 			}
 
-			ids = PayPalIDsForShow(rows, Flags{FixStatusReadmit: true})
+			ids = recon.PayPalIDsForShow(rows, recon.Flags{FixStatusReadmit: true})
 			if _, ok := ids["TX1"]; !ok {
 				t.Errorf("status %q with fix: TX1 should be re-admitted", status)
 			}
@@ -224,7 +227,7 @@ var ledgerCases = []ledgerCase{{
 
 		// "voided" IS re-admitted, which is the asymmetry.
 		rows := []model.CanonicalTicket{ticket("TX1", 1, withStatus("voided"))}
-		if _, ok := PayPalIDsForShow(rows, Flags{})["TX1"]; !ok {
+		if _, ok := recon.PayPalIDsForShow(rows, recon.Flags{})["TX1"]; !ok {
 			t.Error(`status "voided" should be re-admitted`)
 		}
 	},
@@ -235,18 +238,18 @@ var ledgerCases = []ledgerCase{{
 	run: func(t *testing.T) {
 		rows := []model.CanonicalTicket{ticket("TX1", 1, withStatus(" void"))}
 
-		if got := len(Active(rows, Flags{})); got != 1 {
-			t.Errorf("Active kept %d rows, want 1: %q is lowercased but not trimmed, "+
+		if got := len(recon.Active(rows, recon.Flags{})); got != 1 {
+			t.Errorf("recon.Active kept %d rows, want 1: %q is lowercased but not trimmed, "+
 				"so it never matches the exclusion set", got, " void")
 		}
 		// Case folding alone does work.
 		upper := []model.CanonicalTicket{ticket("TX1", 1, withStatus("VOID"))}
-		if got := len(Active(upper, Flags{})); got != 0 {
-			t.Errorf(`Active kept %d rows for "VOID", want 0`, got)
+		if got := len(recon.Active(upper, recon.Flags{})); got != 0 {
+			t.Errorf(`recon.Active kept %d rows for "VOID", want 0`, got)
 		}
 
-		if got := len(Active(rows, Flags{FixStatusTrim: true})); got != 0 {
-			t.Errorf("with fix: Active kept %d rows, want 0", got)
+		if got := len(recon.Active(rows, recon.Flags{FixStatusTrim: true})); got != 0 {
+			t.Errorf("with fix: recon.Active kept %d rows, want 0", got)
 		}
 	},
 }, {
@@ -258,7 +261,7 @@ var ledgerCases = []ledgerCase{{
 		rows := []model.CanonicalTicket{ticket("", 1), ticket("nan", 1)}
 		txns := []model.PayPalTxn{charge("TX1", 10, -1), charge("TX2", 20, -2)}
 
-		got := FilterPayPalForShow(rows, txns, Flags{})
+		got := recon.FilterPayPalForShow(rows, txns, recon.Flags{})
 		if len(got) != 2 {
 			t.Errorf("got %d transactions, want all 2 — an empty id set falls back "+
 				"to returning everything", len(got))
@@ -266,7 +269,7 @@ var ledgerCases = []ledgerCase{{
 
 		// And with an id set present, filtering is exact.
 		rows = []model.CanonicalTicket{ticket("TX1", 1)}
-		if got := FilterPayPalForShow(rows, txns, Flags{}); len(got) != 1 {
+		if got := recon.FilterPayPalForShow(rows, txns, recon.Flags{}); len(got) != 1 {
 			t.Errorf("got %d transactions, want 1", len(got))
 		}
 	},
@@ -283,7 +286,7 @@ var ledgerCases = []ledgerCase{{
 			charge("TX3", 10.005, 0),
 		}
 
-		res := mustBuild(t, rows, txns, Flags{})
+		res := mustBuild(t, rows, txns, recon.Flags{})
 
 		var sumOfRows float64
 		for _, r := range res.Totals.Rows {
@@ -306,7 +309,7 @@ var ledgerCases = []ledgerCase{{
 			ticket("TX3", 1, withNoPerformanceDate()),
 		}
 
-		res := mustBuild(t, rows, nil, Flags{})
+		res := mustBuild(t, rows, nil, recon.Flags{})
 
 		var bodyTickets int
 		for _, r := range res.Statistics.Rows {
@@ -321,7 +324,7 @@ var ledgerCases = []ledgerCase{{
 				res.Statistics.Total.TotalTickets)
 		}
 
-		res = mustBuild(t, rows, nil, Flags{FixNaTPerformanceDate: true})
+		res = mustBuild(t, rows, nil, recon.Flags{FixNaTPerformanceDate: true})
 		if res.Statistics.Total.TotalTickets != 2 {
 			t.Errorf("with fix: TOTAL = %d, want 2 (agrees with the body)",
 				res.Statistics.Total.TotalTickets)
@@ -339,7 +342,7 @@ var ledgerCases = []ledgerCase{{
 		}
 		txns := []model.PayPalTxn{charge("TX1", 10, -1)}
 
-		res := mustBuild(t, rows, txns, Flags{})
+		res := mustBuild(t, rows, txns, recon.Flags{})
 		if got := res.Totals.Rows[0].Transactions; got != 1 {
 			t.Errorf("matched night: Transactions = %d, want 1 (a transaction count)", got)
 		}
@@ -351,7 +354,7 @@ var ledgerCases = []ledgerCase{{
 			t.Errorf("TOTAL = %d, want 4 — two different units summed together", got)
 		}
 
-		res = mustBuild(t, rows, txns, Flags{FixTransactionUnits: true})
+		res = mustBuild(t, rows, txns, recon.Flags{FixTransactionUnits: true})
 		if got := res.Totals.Rows[1].Transactions; got != 0 {
 			t.Errorf("with fix: unmatched night Transactions = %d, want 0", got)
 		}
@@ -368,7 +371,7 @@ var ledgerCases = []ledgerCase{{
 		}
 		txns := []model.PayPalTxn{charge("TX1", 10, -1), charge("TX2", 20, -2)}
 
-		res := mustBuild(t, rows, txns, Flags{})
+		res := mustBuild(t, rows, txns, recon.Flags{})
 
 		if len(res.Totals.Rows) != 1 {
 			t.Errorf("got %d totals rows, want 1 — the fully-voided night produces no "+
@@ -409,7 +412,7 @@ var ledgerCases = []ledgerCase{{
 			ticket("TX2", 1, withStatus("voided"), withRefund(0)),
 		}
 
-		transferred, refunded := splitVoided(rows, Flags{})
+		transferred, refunded := recon.SplitVoided(rows, recon.Flags{})
 		if len(transferred) != 1 || transferred[0].PayPalTxnID != "TX2" {
 			t.Errorf("transferred = %+v, want exactly TX2 (refund amount 0)", transferred)
 		}
@@ -419,7 +422,7 @@ var ledgerCases = []ledgerCase{{
 
 		// A sub-euro refund in cents must not be mistaken for zero.
 		rows = []model.CanonicalTicket{ticket("TX3", 1, withStatus("voided"), withRefund(50))}
-		if _, r := splitVoided(rows, Flags{}); len(r) != 1 {
+		if _, r := recon.SplitVoided(rows, recon.Flags{}); len(r) != 1 {
 			t.Error("a 50-cent refund must classify as refunded, not transferred")
 		}
 	},
@@ -450,7 +453,7 @@ func TestLedgerBehaviors(t *testing.T) {
 
 // TestLedgerCoverage keeps this file and docs/PARITY.md in lockstep.
 func TestLedgerCoverage(t *testing.T) {
-	const doc = "../../docs/PARITY.md"
+	const doc = "../../../docs/PARITY.md"
 
 	raw, err := os.ReadFile(doc)
 	if err != nil {
@@ -496,9 +499,9 @@ func TestLedgerCoverage(t *testing.T) {
 }
 
 // TestFlagsDefaultToReferenceBehavior pins the most important invariant in the
-// package: a zero-valued Flags means "behave exactly like the Python".
+// package: a zero-valued recon.Flags means "behave exactly like the Python".
 func TestFlagsDefaultToReferenceBehavior(t *testing.T) {
-	var f Flags
+	var f recon.Flags
 
 	checks := map[string]bool{
 		"FixUnmatchedDetection":    f.FixUnmatchedDetection,

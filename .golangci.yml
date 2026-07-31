@@ -23,6 +23,7 @@ linters:
         recon-stays-pure:
           files:
             - "**/internal/recon/**"
+            - "**/internal/model/**"
           deny:
             - pkg: "database/sql"
               desc: "internal/recon must not touch storage; pass data in as slices"
