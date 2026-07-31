@@ -57,11 +57,15 @@ var reconcilableTypes = []string{"order", "issued_ticket", "event", "paypal_tran
 //
 // Two decisions here are easy to undo by accident:
 //
-//   - ORDER BY seq. The engine is order-sensitive (money.SumPandas is pairwise,
-//     money.SumPythonBuiltin is Neumaier, and compare.py compares
-//     matched_txn_ids as an ordered list). Sorting by created_at or id instead
-//     would silently break bit-exactness, because 1,026 of 2,562 real tickets
-//     share a created_at.
+//   - ORDER BY seq. Verified by experiment: reversing the ingest order of PayPal
+//     rows makes the parity run fail on matched_txn_ids, which compare.py checks
+//     as an ordered list. Sorting by created_at or id could not reproduce the
+//     provider order anyway — 1,026 of 2,562 real tickets share a created_at.
+//
+//     The money sums are order-sensitive in principle as well (pairwise and
+//     Neumaier summation), though on the present dataset reversing ticket order
+//     moves no figure; the values are well-conditioned enough that the
+//     compensation absorbs it. Not something to rely on.
 //
 //   - The visible-status set includes 'received'. CLAUDE.md's architecture
 //     diagram reads "Postgres (processed) → query API", which taken literally

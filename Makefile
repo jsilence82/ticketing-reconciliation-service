@@ -13,7 +13,7 @@ CMDS           := server backfill parity
 DASHBOARD_VENV ?= $(HOME)/Coding projects/SSG Ticket Dashboard/.venv
 PYTHON         ?= $(DASHBOARD_VENV)/bin/python
 
-.PHONY: check build test test-integration race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-fixed check-python help
+.PHONY: check build test test-integration race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-db parity-fixed check-python help
 
 ## check: fmt + vet + lint + test — what CI runs
 check: fmt vet lint test
@@ -105,6 +105,32 @@ parity: check-python build
 	"$(PYTHON)" tools/parity/driver.py "$(SSG_PARITY_DATA)" $(PARITY_OUT)/python.json
 	./$(BIN)/parity -data "$(SSG_PARITY_DATA)" -out $(PARITY_OUT)/go.json
 	"$(PYTHON)" tools/parity/compare.py $(PARITY_OUT)/python.json $(PARITY_OUT)/go.json
+
+## parity-db: the parity run END TO END THROUGH POSTGRES (CLAUDE.md guardrail 1)
+##
+## Imports the snapshot, reads it back out, re-assembles the canonical frame at
+## read time, and diffs against the unmodified Python reference.
+##
+## The strong assertion is step 4, not step 5: go.json comes from files and
+## go-db.json from Postgres, so byte-identical output proves the round trip
+## preserved everything — float bits and provider array order included. Matching
+## Python alone could in principle pass by luck if the engine were
+## order-insensitive. It is not.
+##
+## Needs SSG_PARITY_DATA and DATABASE_URL. Reaches no provider API.
+parity-db: check-python build
+	@test -n "$(SSG_PARITY_DATA)" || { echo "SSG_PARITY_DATA unset"; exit 1; }
+	@test -n "$(DATABASE_URL)"    || { echo "DATABASE_URL unset"; exit 1; }
+	@mkdir -p $(PARITY_OUT)
+	"$(PYTHON)" tools/parity/driver.py "$(SSG_PARITY_DATA)" $(PARITY_OUT)/python.json
+	./$(BIN)/backfill --from-snapshot "$(SSG_PARITY_DATA)" --database-url "$(DATABASE_URL)"
+	./$(BIN)/parity -data "$(SSG_PARITY_DATA)" -out $(PARITY_OUT)/go.json
+	./$(BIN)/parity -from-db -database-url "$(DATABASE_URL)" -out $(PARITY_OUT)/go-db.json
+	@cmp -s $(PARITY_OUT)/go.json $(PARITY_OUT)/go-db.json \
+		&& echo "ROUND TRIP LOSSLESS: file and postgres output are byte-identical" \
+		|| { echo "ROUND TRIP LOSSY: storage changed the result"; \
+		     diff $(PARITY_OUT)/go.json $(PARITY_OUT)/go-db.json | head -40; exit 1; }
+	"$(PYTHON)" tools/parity/compare.py $(PARITY_OUT)/python.json $(PARITY_OUT)/go-db.json
 
 ## parity-fixed: same, but with every fix flag on — EXPECTED to differ.
 ##                Quantifies what the known defects are worth in real money.

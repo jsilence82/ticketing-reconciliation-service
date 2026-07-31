@@ -5,15 +5,22 @@ CREATE TABLE events (
     id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- seq is the INGEST ORDINAL, and it is load-bearing rather than cosmetic.
-    -- The reconciliation engine is order-sensitive: money.SumPandas is pairwise
-    -- and money.SumPythonBuiltin is Neumaier-compensated, so the order values
-    -- are summed in changes the result at ULP level, and tools/parity/compare.py
-    -- compares matched_txn_ids as an ORDERED list.
+    -- MEASURED: reversing the ingest order of PayPal rows makes the parity run
+    -- fail with "matched transactions: same set, different ORDER" on both
+    -- matched shows, because tools/parity/compare.py compares matched_txn_ids
+    -- as an ordered list.
     --
-    -- (created_at, id) cannot recover the provider's array order: 1,026 of 2,562
+    -- (created_at, id) cannot recover the provider array order: 1,026 of 2,562
     -- real tickets share a created_at, and 387 of 462 PayPal rows share a date
     -- because that field is only YYYY-MM-DD. Only an insertion ordinal works,
     -- which is why the reconcile read is ORDER BY seq.
+    --
+    -- The money sums are order-sensitive in principle too — money.SumPandas is
+    -- pairwise and money.SumPythonBuiltin is Neumaier-compensated. On the
+    -- current dataset that does NOT manifest: reversing ticket order leaves
+    -- every figure unchanged, because the values are well-conditioned euro
+    -- amounts and the compensation absorbs the difference. Correctness should
+    -- not depend on the data staying that way.
     seq                     bigint GENERATED ALWAYS AS IDENTITY,
 
     source                  text NOT NULL

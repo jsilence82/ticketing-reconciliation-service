@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,9 +23,12 @@ import (
 	"strconv"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon/oracle"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/snapshot"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 )
 
 var version = "dev"
@@ -96,6 +100,10 @@ func main() {
 		dataDir = flag.String("data", "", "snapshot directory (default: $SSG_PARITY_DATA)")
 		fixAll  = flag.Bool("fix-all", false,
 			"enable every fix flag; output will NOT match the reference (see docs/PARITY.md)")
+		fromDB = flag.Bool("from-db", false,
+			"read from Postgres instead of the snapshot files, to prove the storage "+
+				"round trip is lossless")
+		dsn = flag.String("database-url", "", "Postgres connection string (default: $DATABASE_URL)")
 	)
 	flag.Parse()
 
@@ -117,33 +125,50 @@ func main() {
 		}
 	}
 
+	// The snapshot directory is only needed by the file path; -from-db reads
+	// everything from Postgres.
 	dir := *dataDir
-	if dir == "" {
-		cfg, err := config.Load()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "config: %v\n", err)
+	if !*fromDB {
+		if dir == "" {
+			cfg, err := config.Load()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "config: %v\n", err)
+				os.Exit(2)
+			}
+			dir = cfg.ParityDataDir
+		}
+		if dir == "" {
+			fmt.Fprintln(os.Stderr, "no snapshot directory: pass -data or set SSG_PARITY_DATA")
+			fmt.Fprintln(os.Stderr, "It must point OUTSIDE this repository (see CLAUDE.md).")
 			os.Exit(2)
 		}
-		dir = cfg.ParityDataDir
-	}
-	if dir == "" {
-		fmt.Fprintln(os.Stderr, "no snapshot directory: pass -data or set SSG_PARITY_DATA")
-		fmt.Fprintln(os.Stderr, "It must point OUTSIDE this repository (see CLAUDE.md).")
-		os.Exit(2)
 	}
 
-	snap, err := snapshot.Load(dir)
+	var (
+		tickets []model.CanonicalTicket
+		txns    []model.PayPalTxn
+		err     error
+	)
+	if *fromDB {
+		// The whole point of this path: everything downstream of here —
+		// model.Assemble, internal/recon, the oracle, the hex-float encoder —
+		// is the same code the file path runs. Only the source differs, so a
+		// difference in output can only have come from storage.
+		tickets, txns, err = loadFromDB(*dsn)
+	} else {
+		tickets, txns, err = loadFromFiles(dir)
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load snapshot: %v\n", err)
+		fmt.Fprintf(os.Stderr, "load: %v\n", err)
 		os.Exit(1)
 	}
 
-	shows := snap.Shows()
+	shows := distinctShows(tickets)
 	sort.Strings(shows)
 
 	results := make(map[string]showJSON, len(shows))
 	for _, show := range shows {
-		res, err := oracle.Build(snap.Tickets, snap.Txns, show, flags)
+		res, err := oracle.Build(tickets, txns, show, flags)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "reconcile %q: %v\n", show, err)
 			os.Exit(1)
@@ -153,12 +178,12 @@ func main() {
 
 	// Classify runs once over everything, not per show: a resource's verdict
 	// cannot depend on which show a caller happened to ask about.
-	counts := recon.Summarise(recon.Classify(snap.Tickets, snap.Txns, flags))
+	counts := recon.Summarise(recon.Classify(tickets, txns, flags))
 
 	payload := outputJSON{
 		Env:         map[string]string{"go": version, "impl": "go"},
-		RecordCount: len(snap.Tickets),
-		TxnCount:    len(snap.Txns),
+		RecordCount: len(tickets),
+		TxnCount:    len(txns),
 		Shows:       shows,
 		Results:     results,
 		Classification: &classificationJSON{
@@ -184,8 +209,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "%d records, %d transactions, %d shows\n",
-		len(snap.Tickets), len(snap.Txns), len(shows))
+	source := "files"
+	if *fromDB {
+		source = "postgres"
+	}
+	fmt.Fprintf(os.Stderr, "[%s] %d records, %d transactions, %d shows\n",
+		source, len(tickets), len(txns), len(shows))
 	fmt.Fprintf(os.Stderr,
 		"classification: %d matched, %d unmatched, %d transferred, %d pending\n",
 		counts.Matched, counts.Unmatched, counts.Transferred, counts.Pending)
@@ -243,5 +272,65 @@ func toJSON(res oracle.Result) showJSON {
 		out.MatchedTxnIDs = append(out.MatchedTxnIDs, tx.TxnID)
 	}
 
+	return out
+}
+
+// loadFromFiles is the P1 path: the dashboard's canonical cache, straight off
+// disk.
+func loadFromFiles(dir string) ([]model.CanonicalTicket, []model.PayPalTxn, error) {
+	snap, err := snapshot.Load(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return snap.Tickets, snap.Txns, nil
+}
+
+// loadFromDB reads the same data back out of Postgres and re-assembles the
+// canonical frame at read time, as the service does in production.
+//
+// If this returns values equal to loadFromFiles, the round trip through jsonb
+// preserved everything — including float bits and provider array order.
+func loadFromDB(dsn string) ([]model.CanonicalTicket, []model.PayPalTxn, error) {
+	if dsn == "" {
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, nil, err
+		}
+		dsn = cfg.DatabaseURL
+	}
+	if dsn == "" {
+		return nil, nil, fmt.Errorf("no database: pass -database-url or set DATABASE_URL")
+	}
+
+	ctx := context.Background()
+	st, err := store.New(ctx, dsn)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer st.Close()
+
+	rows, err := st.LoadResources(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	inputs, err := ingest.DecodeResources(rows)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return model.Assemble(inputs.Orders, inputs.Tickets, inputs.Events), inputs.Txns, nil
+}
+
+// distinctShows lists the shows present, in first-seen order.
+func distinctShows(tickets []model.CanonicalTicket) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, t := range tickets {
+		if !seen[t.Show] {
+			seen[t.Show] = true
+			out = append(out, t.Show)
+		}
+	}
 	return out
 }

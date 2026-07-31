@@ -111,11 +111,13 @@ const (
 type EventRecord struct {
 	ID string
 
-	// Seq is the ingest ordinal assigned by Postgres. It is the ONLY ordering
-	// that reproduces the provider's array order: the engine is order-sensitive,
-	// and (created_at, id) cannot recover it because 1,026 of 2,562 real tickets
-	// share a created_at and 387 of 462 PayPal rows share a date. Zero until the
-	// row has been written.
+	// Seq is the ingest ordinal assigned by Postgres, and the only ordering that
+	// reproduces the provider's array order — (created_at, id) cannot, because
+	// 1,026 of 2,562 real tickets share a created_at and 387 of 462 PayPal rows
+	// share a date.
+	//
+	// Measured consequence: reversing PayPal ingest order fails the parity run
+	// on matched_txn_ids ordering. Zero until the row has been written.
 	Seq int64
 
 	Source       Source
