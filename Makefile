@@ -13,7 +13,7 @@ CMDS           := server backfill parity
 DASHBOARD_VENV ?= $(HOME)/Coding projects/SSG Ticket Dashboard/.venv
 PYTHON         ?= $(DASHBOARD_VENV)/bin/python
 
-.PHONY: check build test race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-fixed check-python help
+.PHONY: check build test test-integration race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-fixed check-python help
 
 ## check: fmt + vet + lint + test — what CI runs
 check: fmt vet lint test
@@ -29,6 +29,19 @@ build:
 ## test: run all tests
 test:
 	$(GO) test ./...
+
+## test-integration: run the Postgres-backed tests, FAILING if DATABASE_URL is unset
+##
+## `make test` lets them skip so a clean checkout stays green. This target is
+## how you answer "did the integration tests actually run?" — a skip-based
+## strategy is only trustworthy if there is a way to demand they don't skip.
+test-integration:
+	@test -n "$(DATABASE_URL)" || { \
+		echo "DATABASE_URL is unset — integration tests would silently skip."; \
+		echo "  brew services start postgresql@17 && createdb trs_test"; \
+		echo "  export DATABASE_URL='postgres://localhost/trs_test?sslmode=disable'"; \
+		exit 1; }
+	$(GO) test ./... -count=1
 
 ## race: run all tests with the race detector
 race:

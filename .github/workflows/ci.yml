@@ -19,6 +19,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # A services block is not a build matrix — the single-job shape CLAUDE.md
+    # asks for is preserved. Pinned to the major the VPS will run.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trs_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,6 +57,11 @@ jobs:
           version: latest
 
       - name: Test
+        # DATABASE_URL is set here rather than at job level so the
+        # integration tests cannot silently skip; the helper in
+        # internal/store/migrate fails outright if CI is set and the DSN is not.
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/trs_test?sslmode=disable
         run: make test
 
       - name: Build
