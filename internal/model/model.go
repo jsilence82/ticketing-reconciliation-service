@@ -111,6 +111,13 @@ const (
 type EventRecord struct {
 	ID string
 
+	// Seq is the ingest ordinal assigned by Postgres. It is the ONLY ordering
+	// that reproduces the provider's array order: the engine is order-sensitive,
+	// and (created_at, id) cannot recover it because 1,026 of 2,562 real tickets
+	// share a created_at and 387 of 462 PayPal rows share a date. Zero until the
+	// row has been written.
+	Seq int64
+
 	Source       Source
 	ResourceType ResourceType
 	// ResourceID is the underlying resource's own ID — a PayPal transaction or
@@ -141,8 +148,22 @@ type EventRecord struct {
 	ReconCounterpartID string
 
 	RetryCount int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+
+	// NextAttemptAt is the backoff floor. Without it a failing row is re-claimed
+	// on every poll tick and burns its whole retry budget in seconds, which is
+	// why retry_count alone is not enough to implement backoff.
+	NextAttemptAt time.Time
+
+	// LastError is the most recent failure, so a dead-lettered row can be
+	// diagnosed without correlating logs.
+	LastError string
+
+	// SignatureVerifiedAt is nil for backfilled rows: a REST response has no
+	// signature to verify.
+	SignatureVerifiedAt *time.Time
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // IsNewerThan reports whether e should overwrite prev in the version-ordered
