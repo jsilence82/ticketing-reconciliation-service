@@ -35,7 +35,8 @@ var ErrTransactionSearchDisabled = errors.New(
 		"developer.paypal.com -> My Apps -> select the app -> enable " +
 		"'Transaction Search' under the Live (or Sandbox) features, then save")
 
-// PayPalClient reads the Transaction Search API.
+// PayPalClient reads the Transaction Search API and, for the webhook path,
+// calls PayPal's own signature verification endpoint.
 type PayPalClient struct {
 	BaseURL  string
 	ClientID string
@@ -46,8 +47,16 @@ type PayPalClient struct {
 	// now is injectable so token-expiry logic is testable without waiting.
 	now func() time.Time
 
-	token       string
-	tokenExpiry time.Time
+	// Two independent caches, deliberately not one. A token minted with
+	// payPalScope (Transaction Search) may not carry the Webhooks scope
+	// verify-webhook-signature needs, and vice versa — sharing one cache field
+	// between them would intermittently authenticate one call with the wrong
+	// scope's token depending on request order.
+	searchToken       string
+	searchTokenExpiry time.Time
+
+	webhookToken       string
+	webhookTokenExpiry time.Time
 }
 
 // NewPayPalClient builds a client. baseURL selects sandbox or live; the caller
@@ -68,62 +77,164 @@ type tokenResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
-// Token returns a cached access token, refreshing when it is close to expiring.
+// Token returns a cached Transaction Search access token, refreshing when it
+// is close to expiring.
 //
 // The 60-second margin matters: a token that expires mid-window turns a long
 // backfill into a spurious 401 halfway through.
 func (c *PayPalClient) Token(ctx context.Context) (string, error) {
-	if c.token != "" && c.now().Before(c.tokenExpiry) {
-		return c.token, nil
+	if c.searchToken != "" && c.now().Before(c.searchTokenExpiry) {
+		return c.searchToken, nil
 	}
+	tok, expiry, err := c.fetchToken(ctx, payPalScope)
+	if err != nil {
+		return "", err
+	}
+	c.searchToken, c.searchTokenExpiry = tok, expiry
+	return tok, nil
+}
 
-	form := url.Values{
-		"grant_type": {"client_credentials"},
-		"scope":      {payPalScope},
+// webhookToken returns a cached DEFAULT-scope access token — no explicit
+// scope parameter, so PayPal grants whatever the REST app itself is
+// configured for. verify-webhook-signature needs the app's Webhooks scope,
+// which the Transaction-Search-scoped token from Token() does not carry.
+func (c *PayPalClient) webhookAccessToken(ctx context.Context) (string, error) {
+	if c.webhookToken != "" && c.now().Before(c.webhookTokenExpiry) {
+		return c.webhookToken, nil
+	}
+	tok, expiry, err := c.fetchToken(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	c.webhookToken, c.webhookTokenExpiry = tok, expiry
+	return tok, nil
+}
+
+// fetchToken does the client_credentials round trip. scope == "" omits the
+// scope form field entirely, which is what asks PayPal for a token carrying
+// the app's full default set of scopes rather than one narrowed to a single
+// feature.
+func (c *PayPalClient) fetchToken(ctx context.Context, scope string) (string, time.Time, error) {
+	form := url.Values{"grant_type": {"client_credentials"}}
+	if scope != "" {
+		form.Set("scope", scope)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.BaseURL+"/v1/oauth2/token", strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(strings.TrimSpace(c.ClientID), strings.TrimSpace(c.Secret))
 
 	if err := c.Limiter.Wait(ctx); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("paypal token: %w", err)
+		return "", time.Time{}, fmt.Errorf("paypal token: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("paypal token: %w", err)
+		return "", time.Time{}, fmt.Errorf("paypal token: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("paypal token: HTTP %d: %s", resp.StatusCode, truncate(body, 300))
+		return "", time.Time{}, fmt.Errorf("paypal token: HTTP %d: %s", resp.StatusCode, truncate(body, 300))
 	}
 
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil {
-		return "", fmt.Errorf("paypal token: %w", err)
+		return "", time.Time{}, fmt.Errorf("paypal token: %w", err)
 	}
 	if tr.AccessToken == "" {
-		return "", errors.New("paypal token: response carried no access_token")
+		return "", time.Time{}, errors.New("paypal token: response carried no access_token")
 	}
 
-	c.token = tr.AccessToken
 	ttl := time.Duration(tr.ExpiresIn) * time.Second
 	if ttl > 60*time.Second {
 		ttl -= 60 * time.Second
 	}
-	c.tokenExpiry = c.now().Add(ttl)
+	return tr.AccessToken, c.now().Add(ttl), nil
+}
 
-	return c.token, nil
+// VerifyWebhookSignatureRequest is the body PayPal's
+// /v1/notifications/verify-webhook-signature endpoint expects. Field names
+// and shape are fixed by PayPal's API, not this service's convention.
+type VerifyWebhookSignatureRequest struct {
+	TransmissionID   string          `json:"transmission_id"`
+	TransmissionTime string          `json:"transmission_time"`
+	CertURL          string          `json:"cert_url"`
+	AuthAlgo         string          `json:"auth_algo"`
+	TransmissionSig  string          `json:"transmission_sig"`
+	WebhookID        string          `json:"webhook_id"`
+	WebhookEvent     json.RawMessage `json:"webhook_event"`
+}
+
+// VerifyWebhookSignature asks PayPal to verify a webhook delivery, rather than
+// validating the X.509 cert chain offline.
+//
+// CLAUDE.md, Architecture, records this as a deliberate decision (2026-08-01):
+// at this project's volume the extra round trip is cheap, and delegating
+// verification to PayPal avoids re-implementing certificate chain validation,
+// which is easy to get subtly wrong (e.g. an unrestricted cert_url fetch is a
+// spoofing hole).
+//
+// WebhookEvent must be the EXACT raw body bytes PayPal sent — re-serializing
+// would risk the same key-order/whitespace drift CLAUDE.md warns about for the
+// offline CRC32 path, and PayPal's own docs pass the received body through
+// unmodified.
+func (c *PayPalClient) VerifyWebhookSignature(
+	ctx context.Context, req VerifyWebhookSignatureRequest,
+) (bool, error) {
+	token, err := c.webhookAccessToken(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return false, fmt.Errorf("paypal verify webhook signature: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.BaseURL+"/v1/notifications/verify-webhook-signature", strings.NewReader(string(payload)))
+	if err != nil {
+		return false, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	if err := c.Limiter.Wait(ctx); err != nil {
+		return false, err
+	}
+
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return false, fmt.Errorf("paypal verify webhook signature: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return false, fmt.Errorf("paypal verify webhook signature: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("paypal verify webhook signature: HTTP %d: %s",
+			resp.StatusCode, truncate(body, 300))
+	}
+
+	var vr struct {
+		VerificationStatus string `json:"verification_status"`
+	}
+	if err := json.Unmarshal(body, &vr); err != nil {
+		return false, fmt.Errorf("paypal verify webhook signature: %w", err)
+	}
+
+	return vr.VerificationStatus == "SUCCESS", nil
 }
 
 // PayPalPager walks Transaction Search a window and a page at a time.

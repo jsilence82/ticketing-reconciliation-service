@@ -1,0 +1,9 @@
+# Reverse proxy config for compose.yml's `proxy` service. Caddy issues and
+# renews the TLS certificate automatically via Let's Encrypt once DNS for the
+# domain below points at this host — no manual cert management, which is the
+# whole reason Caddy was picked over nginx here (CLAUDE.md, Deployment).
+#
+# Replace with the real domain before first deploy.
+reconciliation.example.org {
+	reverse_proxy app:8080
+}

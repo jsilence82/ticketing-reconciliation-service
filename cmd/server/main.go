@@ -25,7 +25,9 @@ import (
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/api"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/importer"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/webhook"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/worker"
 )
 
@@ -118,9 +120,48 @@ func run() error {
 		defer apiStore.Close()
 	}
 
+	mux := srv.Routes()
+
+	// The webhook route writes through st (the worker's role), never through
+	// the API's read-only pool — guardrail 3 only constrains the query API.
+	// Optional for now: TT_WEBHOOK_SECRET is still being pinned against real
+	// captured deliveries (see CLAUDE.md, P4), so a missing secret disables the
+	// route rather than failing startup.
+	if cfg.TicketTailor.WebhookSecret == "" {
+		log.Warn("TT_WEBHOOK_SECRET unset: /webhooks/tickettailor is disabled")
+	} else {
+		ttHandler, err := webhook.NewTicketTailorHandler(cfg.TicketTailor.WebhookSecret, st, log)
+		if err != nil {
+			return fmt.Errorf("ticket tailor webhook handler: %w", err)
+		}
+		mux.Handle("POST /webhooks/tickettailor", ttHandler)
+		log.Info("ticket tailor webhook route enabled", "path", "/webhooks/tickettailor")
+	}
+
+	// Same optional-gate pattern as Ticket Tailor above: all three of
+	// PAYPAL_CLIENT_ID/PAYPAL_SECRET/PAYPAL_WEBHOOK_ID are needed before the
+	// route can verify anything, and PAYPAL_WEBHOOK_ID in particular does not
+	// exist until a webhook subscription has been created against this
+	// server's own URL — a chicken-and-egg the optional gate resolves by
+	// just starting without the route rather than refusing to boot.
+	switch {
+	case cfg.PayPal.ClientID == "" || cfg.PayPal.Secret == "":
+		log.Warn("PAYPAL_CLIENT_ID/PAYPAL_SECRET unset: /webhooks/paypal is disabled")
+	case cfg.PayPal.WebhookID == "":
+		log.Warn("PAYPAL_WEBHOOK_ID unset: /webhooks/paypal is disabled")
+	default:
+		ppClient := importer.NewPayPalClient(cfg.PayPal.BaseURL(), cfg.PayPal.ClientID, cfg.PayPal.Secret)
+		ppHandler, err := webhook.NewPayPalHandler(ppClient, cfg.PayPal.WebhookID, st, log)
+		if err != nil {
+			return fmt.Errorf("paypal webhook handler: %w", err)
+		}
+		mux.Handle("POST /webhooks/paypal", ppHandler)
+		log.Info("paypal webhook route enabled", "path", "/webhooks/paypal", "sandbox", cfg.PayPal.Sandbox)
+	}
+
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           srv.Routes(),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

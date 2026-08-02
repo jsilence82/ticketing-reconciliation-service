@@ -137,6 +137,22 @@ type healthResponse struct {
 	// that matter: both mean a consumer's figures are drifting from reality, and
 	// neither produces an error anywhere else.
 	Recon map[string]int `json:"recon"`
+	// Unresolved counts rows referencing a parent not yet seen. CLAUDE.md,
+	// Persistence & read model: a missing order or event reads as empty/zero at
+	// assemble time rather than erroring — correct for the matching rule, but it
+	// means an orphan silently changes a night's numbers unless something
+	// surfaces it here.
+	Unresolved unresolvedDTO `json:"unresolved"`
+}
+
+// unresolvedDTO is the orphan-reference counts described above.
+type unresolvedDTO struct {
+	// MissingOrders is issued tickets whose order_id does not match any stored
+	// order — most often a ticket webhook that arrived before its order's.
+	MissingOrders int `json:"missing_orders"`
+	// MissingEvents is issued tickets whose event_id does not match any stored,
+	// non-tombstoned event.
+	MissingEvents int `json:"missing_events"`
 }
 
 // errorResponse is the single error shape, so a consumer can parse failures

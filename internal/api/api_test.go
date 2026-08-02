@@ -135,6 +135,53 @@ func TestHealthIsUnauthenticated(t *testing.T) {
 	}
 }
 
+// A ticket can arrive by webhook before its order or event does (CLAUDE.md,
+// Persistence & read model): the assemble-time LEFT JOIN reads that as
+// empty/zero rather than erroring, which is correct for the matching rule but
+// means an orphan silently changes a night's numbers unless /healthz surfaces
+// it. This proves it does, and that a fully-resolved ticket is NOT counted.
+func TestHealthUnresolvedReferences(t *testing.T) {
+	s := scratchStore(t)
+	h := newServer(t, s)
+
+	seed(t, s,
+		// Resolved: order and event both present. Must not be counted.
+		rec(model.SourceTicketTailor, model.ResourceOrder, "or_1",
+			`{"object":"order","id":"or_1","txn_id":"TX1","status":"completed","created_at":1700000000}`),
+		rec(model.SourceTicketTailor, model.ResourceEvent, "ev_1",
+			`{"object":"event","id":"ev_1","name":"Carmilla","created_at":1700000000}`),
+		rec(model.SourceTicketTailor, model.ResourceIssuedTicket, "it_resolved",
+			`{"object":"issued_ticket","id":"it_resolved","order_id":"or_1","event_id":"ev_1",
+			  "status":"valid","listed_price":1000,"created_at":1700000000}`),
+		// Orphan: references an order and event neither of which was ever seen —
+		// the ticket-before-order race a live webhook subscription can produce.
+		rec(model.SourceTicketTailor, model.ResourceIssuedTicket, "it_orphan",
+			`{"object":"issued_ticket","id":"it_orphan","order_id":"or_missing","event_id":"ev_missing",
+			  "status":"valid","listed_price":1000,"created_at":1700000000}`),
+	)
+
+	w := do(t, h, "GET", "/healthz", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200", w.Code)
+	}
+
+	var body struct {
+		Unresolved struct {
+			MissingOrders int `json:"missing_orders"`
+			MissingEvents int `json:"missing_events"`
+		} `json:"unresolved"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Unresolved.MissingOrders != 1 {
+		t.Errorf("MissingOrders = %d, want 1 (only it_orphan)", body.Unresolved.MissingOrders)
+	}
+	if body.Unresolved.MissingEvents != 1 {
+		t.Errorf("MissingEvents = %d, want 1 (only it_orphan)", body.Unresolved.MissingEvents)
+	}
+}
+
 func TestAPIKeyViaHeader(t *testing.T) {
 	s := scratchStore(t)
 	h := newServer(t, s)

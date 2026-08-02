@@ -19,11 +19,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 )
 
@@ -90,11 +93,41 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	unresolved, err := s.unresolvedCounts(r.Context())
+	if err != nil {
+		s.log.Error("health: unresolved references", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, healthResponse{
-		Status: "ok",
-		Events: counts.ByStatus,
-		Recon:  counts.ByReconStatus,
+		Status:     "ok",
+		Events:     counts.ByStatus,
+		Recon:      counts.ByReconStatus,
+		Unresolved: unresolved,
 	})
+}
+
+// unresolvedCounts tallies tickets whose order or event has not been seen yet.
+//
+// CLAUDE.md, Persistence & read model: a missing parent reads as empty/zero at
+// assemble time rather than erroring, which is correct for the matching rule
+// but means an orphan silently changes a night's numbers unless something
+// surfaces it — this is that something. Reuses the same LoadResources +
+// DecodeResources path the reconcile pass uses, rather than a bespoke query,
+// so the two can never disagree about what "unresolved" means.
+func (s *Server) unresolvedCounts(ctx context.Context) (unresolvedDTO, error) {
+	rows, err := s.store.LoadResources(ctx)
+	if err != nil {
+		return unresolvedDTO{}, fmt.Errorf("load resources: %w", err)
+	}
+	inputs, err := ingest.DecodeResources(rows)
+	if err != nil {
+		return unresolvedDTO{}, fmt.Errorf("decode resources: %w", err)
+	}
+
+	missingOrders, missingEvents := model.UnresolvedParents(inputs.Orders, inputs.Tickets, inputs.Events)
+	return unresolvedDTO{MissingOrders: missingOrders, MissingEvents: missingEvents}, nil
 }
 
 func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {

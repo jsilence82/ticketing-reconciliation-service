@@ -2,8 +2,10 @@ package ingest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
@@ -242,6 +244,273 @@ func FromPayPalSearch(raw []byte, origin model.Origin) (model.EventRecord, error
 		Status:       "received",
 		Payload:      payload,
 		OccurredAt:   payPalDate(dateKey(ti.InitiationDate)),
+	}, nil
+}
+
+// paypalWebhookEnvelope is the top-level shape of every PayPal webhook
+// delivery. Unlike Ticket Tailor's envelope, this one is fixed and
+// extensively documented by PayPal itself — nothing here needed confirming
+// against a real capture the way Ticket Tailor's did.
+type paypalWebhookEnvelope struct {
+	ID           string          `json:"id"`
+	EventType    string          `json:"event_type"`
+	ResourceType string          `json:"resource_type"`
+	CreateTime   string          `json:"create_time"`
+	Resource     json.RawMessage `json:"resource"`
+}
+
+// paypalLink is one entry of a PayPal HATEOAS links array.
+type paypalLink struct {
+	Href string `json:"href"`
+	Rel  string `json:"rel"`
+}
+
+// paypalWhitelistedTopics mirrors CLAUDE.md, Data sources: there is no
+// webhook equivalent of Transaction Search's balance_affecting_records_only=Y,
+// so every other topic must be stored as ignored rather than reconciled.
+var paypalWhitelistedTopics = map[string]bool{
+	"PAYMENT.CAPTURE.COMPLETED": true,
+	"PAYMENT.CAPTURE.REFUNDED":  true,
+	"PAYMENT.CAPTURE.REVERSED":  true,
+	"PAYMENT.CAPTURE.DENIED":    true,
+}
+
+// paypalCaptureResource is the `resource` object on PAYMENT.CAPTURE.COMPLETED
+// and PAYMENT.CAPTURE.DENIED events.
+type paypalCaptureResource struct {
+	ID                        string `json:"id"`
+	Status                    string `json:"status"`
+	Amount                    *money `json:"amount"`
+	SellerReceivableBreakdown struct {
+		PayPalFee *money `json:"paypal_fee"`
+	} `json:"seller_receivable_breakdown"`
+	CreateTime string       `json:"create_time"`
+	Links      []paypalLink `json:"links"`
+}
+
+// paypalRefundResource is the `resource` object on PAYMENT.CAPTURE.REFUNDED
+// and (best-effort — see FromPayPalWebhook's doc comment) REVERSED events.
+// PayPal names the fee breakdown `seller_payable_breakdown` here, not
+// `seller_receivable_breakdown` as on a capture — a real API inconsistency
+// between the two resource shapes, not a typo in this struct.
+type paypalRefundResource struct {
+	ID                     string `json:"id"`
+	Status                 string `json:"status"`
+	Amount                 *money `json:"amount"`
+	SellerPayableBreakdown struct {
+		PayPalFee *money `json:"paypal_fee"`
+	} `json:"seller_payable_breakdown"`
+	CreateTime string       `json:"create_time"`
+	Links      []paypalLink `json:"links"`
+}
+
+// FromPayPalWebhook builds a record from one PayPal webhook delivery.
+//
+// raw is the FULL delivery body, envelope included — unlike
+// FromTicketTailor, which only ever sees the bare resource. That asymmetry is
+// deliberate: Ticket Tailor's payload has the same shape whether it arrives by
+// webhook or REST fetch, but PayPal's resource shape genuinely depends on
+// event_type (a capture's fee breakdown is keyed differently than a refund's),
+// so the topic dispatch has to happen here rather than in a caller that treats
+// the resource opaquely.
+//
+// # Confidence
+//
+// PAYMENT.CAPTURE.COMPLETED and PAYMENT.CAPTURE.REFUNDED are PROVEN
+// (2026-08-01) against a real sandbox transaction: an order captured then
+// refunded via the live Sandbox REST API, both deliveries genuinely signed by
+// PayPal, both verified, both normalized correctly (including the fee-sign
+// flip in both directions, and the refund's paypal_reference_id correctly
+// derived from its "up" link — the classifier then paired the two rows
+// correctly). See CLAUDE.md's Architecture status note for the full trace.
+//
+// PAYMENT.CAPTURE.REVERSED is implemented AS IF it shares the refund shape,
+// which matches PayPal's public webhook reference but — unlike COMPLETED and
+// REFUNDED above — has NOT been validated against a real delivery, because
+// triggering a genuine reversal (a bank-initiated chargeback) is not
+// practical to simulate on demand in the sandbox. Confirm against a real
+// delivery before trusting it in production.
+func FromPayPalWebhook(raw []byte, origin model.Origin) (model.EventRecord, error) {
+	var env paypalWebhookEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal webhook envelope: %w", err)
+	}
+	if env.ID == "" {
+		return model.EventRecord{}, errors.New("paypal webhook: delivery has no id")
+	}
+
+	if !paypalWhitelistedTopics[env.EventType] {
+		return paypalIgnoredRecord(env, origin)
+	}
+
+	switch env.EventType {
+	case "PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.DENIED":
+		return fromPayPalCaptureResource(env, origin)
+	case "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED":
+		return fromPayPalRefundResource(env, origin)
+	default:
+		// Unreachable given paypalWhitelistedTopics above. Kept as its own
+		// branch rather than folded into that check so a future topic added to
+		// the whitelist without a case here fails loudly at runtime instead of
+		// silently falling through to "ignored".
+		return model.EventRecord{}, fmt.Errorf(
+			"paypal webhook: topic %q is whitelisted but has no handler", env.EventType)
+	}
+}
+
+func fromPayPalCaptureResource(env paypalWebhookEnvelope, origin model.Origin) (model.EventRecord, error) {
+	var r paypalCaptureResource
+	if err := json.Unmarshal(env.Resource, &r); err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal capture resource: %w", err)
+	}
+	if r.ID == "" {
+		return model.EventRecord{}, errors.New("paypal capture resource has no id")
+	}
+
+	gross := parseAmount(r.Amount)
+	// Webhook fee is a positive magnitude on both charge and refund
+	// (CLAUDE.md's field mapping table); Transaction Search's convention —
+	// which the rest of this service is normalized to — is negative on a
+	// charge. Negate here, once, so net = gross + fee holds identically
+	// regardless of which path ingested the row.
+	fee := -parseAmount(r.SellerReceivableBreakdown.PayPalFee)
+
+	currency := ""
+	if r.Amount != nil {
+		currency = r.Amount.CurrencyCode
+	}
+
+	// A capture is the charge itself, not a refund referencing one — no
+	// paypal_reference_id, same as Transaction Search leaves it empty for a
+	// plain charge.
+	return buildPayPalRecord(env, r.ID, r.Status, gross, fee, currency, "", r.CreateTime, origin)
+}
+
+func fromPayPalRefundResource(env paypalWebhookEnvelope, origin model.Origin) (model.EventRecord, error) {
+	var r paypalRefundResource
+	if err := json.Unmarshal(env.Resource, &r); err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal refund resource: %w", err)
+	}
+	if r.ID == "" {
+		return model.EventRecord{}, errors.New("paypal refund resource has no id")
+	}
+
+	// Refunds move money back to the buyer. The webhook gives a positive
+	// magnitude; Transaction Search's convention is negative gross on a
+	// refund, so negate.
+	gross := -parseAmount(r.Amount)
+	// Fee here is ALREADY the sign Transaction Search uses (positive on a
+	// refund) per the same table — no negation, unlike the capture case above.
+	fee := parseAmount(r.SellerPayableBreakdown.PayPalFee)
+
+	currency := ""
+	if r.Amount != nil {
+		currency = r.Amount.CurrencyCode
+	}
+
+	// Never guess an unresolvable reference (CLAUDE.md, Data sources): an
+	// empty string here is exactly what tells recon.Classify to mark the row
+	// ReconPending instead of silently dropping it — see classify.go's
+	// `IsRefund() && PayPalReferenceID == ""` check.
+	ref := paypalParentCaptureID(r.Links)
+
+	return buildPayPalRecord(env, r.ID, r.Status, gross, fee, currency, ref, r.CreateTime, origin)
+}
+
+// paypalParentCaptureID extracts the parent capture's id from the refund
+// resource's "up" link (CLAUDE.md: "derive from links[rel=\"up\"]"), e.g.
+// ".../v2/payments/captures/3C679366HD394342E" -> "3C679366HD394342E".
+func paypalParentCaptureID(links []paypalLink) string {
+	for _, l := range links {
+		if l.Rel != "up" {
+			continue
+		}
+		href := strings.TrimRight(l.Href, "/")
+		if idx := strings.LastIndex(href, "/"); idx >= 0 && idx+1 < len(href) {
+			return href[idx+1:]
+		}
+	}
+	return ""
+}
+
+// buildPayPalRecord assembles the SAME normalized shape FromPayPalSearch
+// produces (txn_id/date/gross/fee/net/status/paypal_reference_id/currency),
+// so a row read back by DecodeResources is indistinguishable regardless of
+// which path ingested it.
+func buildPayPalRecord(
+	env paypalWebhookEnvelope, resourceID, status string,
+	gross, fee float64, currency, paypalReferenceID, createTime string,
+	origin model.Origin,
+) (model.EventRecord, error) {
+	normalized := map[string]any{
+		"txn_id":              resourceID,
+		"date":                dateKey(createTime),
+		"gross":               gross,
+		"fee":                 fee,
+		"net":                 gross + fee,
+		"status":              status,
+		"paypal_reference_id": paypalReferenceID,
+		"currency":            currency,
+	}
+
+	blob, err := json.Marshal(normalized)
+	if err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal %s: %w", resourceID, err)
+	}
+
+	payload, err := Sanitize(model.ResourcePayPalTransaction, blob)
+	if err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal %s: %w", resourceID, err)
+	}
+
+	return model.EventRecord{
+		Source:                model.SourcePayPal,
+		ResourceType:          model.ResourcePayPalTransaction,
+		ResourceID:            resourceID,
+		WebhookNotificationID: env.ID,
+		Origin:                origin,
+		Topic:                 env.EventType,
+		Status:                "received",
+		Payload:               payload,
+		OccurredAt:            payPalDate(dateKey(createTime)),
+	}, nil
+}
+
+// paypalIgnoredRecord stores a non-whitelisted delivery for the audit trail
+// without reconciling it — mirrors ResourceOther for Ticket Tailor's
+// non-whitelisted topics (e.g. waitlist_signup).
+func paypalIgnoredRecord(env paypalWebhookEnvelope, origin model.Origin) (model.EventRecord, error) {
+	// Not every PayPal resource type keys itself "id" at the top level (e.g.
+	// disputes use dispute_id). This event is never reconciled regardless, so
+	// falling back to the delivery id keeps every non-whitelisted topic
+	// storable rather than rejected outright.
+	var generic struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(env.Resource, &generic)
+	resourceID := generic.ID
+	if resourceID == "" {
+		resourceID = env.ID
+	}
+
+	// Sanitize has no allowlist entry for ResourceOther, so this returns "{}"
+	// via its fail-closed default — the same behavior Ticket Tailor's ignored
+	// resources get.
+	payload, err := Sanitize(model.ResourceOther, env.Resource)
+	if err != nil {
+		return model.EventRecord{}, fmt.Errorf("paypal %s: %w", env.EventType, err)
+	}
+
+	return model.EventRecord{
+		Source:                model.SourcePayPal,
+		ResourceType:          model.ResourceOther,
+		ResourceID:            resourceID,
+		WebhookNotificationID: env.ID,
+		Origin:                origin,
+		Topic:                 env.EventType,
+		Status:                "ignored",
+		Payload:               payload,
+		OccurredAt:            payPalDate(dateKey(env.CreateTime)),
 	}, nil
 }
 

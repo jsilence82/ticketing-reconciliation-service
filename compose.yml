@@ -1,0 +1,87 @@
+# Docker Compose deployment stack for the small VPS described in CLAUDE.md,
+# Deployment. This is the PRODUCTION deployment target, not a local dev tool —
+# local development runs `go run ./cmd/server` directly against a local
+# Postgres (see docs/ENVIRONMENT.md); nothing here is needed for that.
+#
+# The app image is pulled, never built here — the VPS is explicitly forbidden
+# from building its own image (CLAUDE.md, Deployment: "it couples deploys to
+# the box having a toolchain and a clean checkout"). `.github/workflows/ci.yml`
+# is what produces ghcr.io/<owner>/ticketing-reconciliation-service on every
+# merge to main.
+#
+# Observability sibling containers (OpenTelemetry/Prometheus/Grafana) are
+# deliberately NOT included yet. CLAUDE.md's Tech stack section calls for
+# them, but no instrumentation exists in the service yet either — an empty
+# Prometheus config scraping nothing is dead weight. Add them here once that
+# phase actually ships something worth scraping.
+#
+# One-time setup on the VPS, before the first `up`:
+#   1. cp .env.example .env, then fill in production secrets. chmod 600 it.
+#      NEVER commit this file — see docs/ENVIRONMENT.md.
+#   2. Point DNS at this host, then edit Caddyfile's placeholder domain.
+#   3. After the first `up` brings Postgres online, provision the read-only
+#      API role ONCE (not automated here — see docs/ENVIRONMENT.md, "The
+#      query API's database role"):
+#        docker compose exec -T postgres psql -U reconciler -d reconciliation \
+#          -v api_password="$(openssl rand -base64 32)" -v DBNAME=reconciliation \
+#          -f /dev/stdin < deploy/readonly-role.sql
+#      (-T disables TTY allocation so piped stdin actually reaches psql)
+#      Put the resulting connection string in .env as API_DATABASE_URL, then
+#      `docker compose up -d` again so the app picks it up.
+#
+# Routine deploy, once set up:
+#   docker compose pull && docker compose up -d
+
+services:
+  app:
+    image: ghcr.io/jsilence82/ticketing-reconciliation-service:latest
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No ports: published. CLAUDE.md, Deployment: only the reverse proxy is
+    # reachable from outside the Compose network — the app is reached at
+    # http://app:8080 from inside it, which is what the Caddyfile does.
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: reconciliation
+      POSTGRES_USER: reconciler
+      # No default — an unset password fails container startup rather than
+      # silently using a guessable one (CLAUDE.md guardrail 4's "secrets have
+      # no defaults" principle, applied here too).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      # Named volume, not a bind mount into the repo (CLAUDE.md, Deployment).
+      - postgres_data:/var/lib/postgresql/data
+    # No ports: published — this holds buyer payment data and must not be
+    # reachable from the internet at all, only from other Compose services.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reconciler -d reconciliation"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  proxy:
+    # Caddy over nginx: automatic Let's Encrypt TLS with near-zero config,
+    # which suits a low-ops project for one nonprofit (CLAUDE.md, Deployment:
+    # "TLS is not optional... but it belongs to the proxy, not this service").
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
