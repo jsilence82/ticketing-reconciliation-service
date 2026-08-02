@@ -34,6 +34,14 @@
 #      (-T disables TTY allocation so piped stdin actually reaches psql)
 #      Put the resulting connection string in .env as API_DATABASE_URL, then
 #      `docker compose up -d` again so the app picks it up.
+#   4. Backups (CLAUDE.md, Deployment: "back up Postgres on a schedule and
+#      verify a restore at least once" — see docs/ENVIRONMENT.md, "Postgres
+#      backups", and docs/BACKUP.md for the verification record). Not a
+#      service in this file — deploy/backup.sh is a host-cron script, not a
+#      container, because it only needs to run once a night. Provision the
+#      restic repository once (`restic init`), install the crontab line from
+#      that script's header, then run `make restore-check` and record the
+#      result.
 #
 # Routine deploy, once set up:
 #   docker compose pull && docker compose up -d

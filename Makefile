@@ -13,7 +13,7 @@ CMDS           := server backfill parity
 DASHBOARD_VENV ?= $(HOME)/Coding projects/SSG Ticket Dashboard/.venv
 PYTHON         ?= $(DASHBOARD_VENV)/bin/python
 
-.PHONY: check build test test-integration race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-db parity-fixed check-python help
+.PHONY: check build test test-integration race lint fmt fmt-fix vet tidy clean money-fixture sum-fixture fixtures parity parity-db parity-fixed check-python help backup restore-check
 
 ## check: fmt + vet + lint + test — what CI runs
 check: fmt vet lint test
@@ -143,6 +143,21 @@ check-python:
 	@test -x "$(PYTHON)" || { \
 		echo "python not found at: $(PYTHON)"; \
 		echo "set PYTHON=/path/to/python (needs numpy + pandas)"; exit 1; }
+
+## backup: run deploy/backup.sh (pg_dump | restic) against the postgres
+##          compose service — meant for the VPS host's cron, see the
+##          script's own header for the crontab line. Needs
+##          RESTIC_REPOSITORY/RESTIC_PASSWORD — see docs/ENVIRONMENT.md.
+backup:
+	./deploy/backup.sh
+
+## restore-check: prove the latest backup actually restores (CLAUDE.md,
+##                 Deployment: "verify a restore at least once"). Talks only
+##                 to a disposable docker run container — never the real
+##                 postgres compose service. Record the result in
+##                 docs/BACKUP.md.
+restore-check:
+	./deploy/restore-check.sh
 
 ## clean: remove build output
 clean:
