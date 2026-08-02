@@ -10,13 +10,19 @@ reference/
 snapshots/
 testdata/parity/*/input/
 
-# --- Local-only project docs ---------------------------------------------
-# Kept out of version control by request. NOTE: docs/PARITY.md is the record
-# that CLAUDE.md guardrail 2 requires ("recorded here, with a reason"), so
-# while it is ignored, that ledger exists only on this machine — it is not
-# shared, reviewed, or backed up with the repo.
+# --- Local-only project notes ---------------------------------------------
+# CLAUDE.md is Claude Code's project-memory file: internal working notes for
+# an AI coding assistant, not meant for a public audience.
+#
+# docs/PARITY.md is the porting-phase ledger comparing this service against
+# the legacy reconciliation script it replaces. It is temporary by design —
+# deleted once that migration is complete — and references the other
+# codebase's internal file structure, so it stays local-only rather than
+# committed as permanent documentation.
+#
+# The rest of docs/ is public-facing supporting documentation and IS tracked.
 CLAUDE.md
-docs/
+docs/PARITY.md
 
 # --- Secrets --------------------------------------------------------------
 .env
