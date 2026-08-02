@@ -10,12 +10,54 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/snapshot"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/worker"
 )
+
+// testMetricsReader is installed exactly once, in TestMain — see the
+// identical reasoning in internal/metrics/metrics_test.go: otel's
+// no-op-to-real MeterProvider delegation only fires on the FIRST
+// SetMeterProvider call in a process, so per-test provider swapping would
+// silently drop every test after the first.
+var testMetricsReader = sdkmetric.NewManualReader()
+
+func TestMain(m *testing.M) {
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(testMetricsReader))
+	otel.SetMeterProvider(provider)
+	os.Exit(m.Run())
+}
+
+// findMetricSum locates a Sum[int64] data point matching name/attrs, or
+// fails the test.
+func findMetricSum(t *testing.T, rm metricdata.ResourceMetrics, name string, attrs attribute.Set) int64 {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q is not a Sum[int64]: %T", name, m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				if dp.Attributes.Equals(&attrs) {
+					return dp.Value
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attributes %v not found in %+v", name, attrs, rm)
+	return 0
+}
 
 func testCtx(t *testing.T) context.Context {
 	t.Helper()
@@ -147,6 +189,17 @@ func TestStageOneDeadLettersUnparseableRow(t *testing.T) {
 	}
 	if h.ByStatus["processed"] != 1 {
 		t.Errorf("the good row should still have been processed; got %v", h.ByStatus)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := testMetricsReader.Collect(c, &rm); err != nil {
+		t.Fatal(err)
+	}
+	deadLettered := attribute.NewSet(
+		attribute.String("resource_type", string(model.ResourceOrder)),
+		attribute.String("outcome", "dead_lettered"))
+	if got := findMetricSum(t, rm, "worker.failures", deadLettered); got < 1 {
+		t.Errorf("worker.failures{resource_type=order,outcome=dead_lettered} = %d, want >= 1", got)
 	}
 }
 

@@ -1,0 +1,10 @@
+# Grafana file-based provisioning: loads dashboard JSON files from this same
+# directory automatically, so the starter dashboard in reconciliation.json
+# shows up without manual import.
+apiVersion: 1
+providers:
+  - name: reconciliation
+    folder: ""
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards

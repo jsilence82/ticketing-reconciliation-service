@@ -9,16 +9,22 @@
 # is what produces ghcr.io/<owner>/ticketing-reconciliation-service on every
 # merge to main.
 #
-# Observability sibling containers (OpenTelemetry/Prometheus/Grafana) are
-# deliberately NOT included yet. CLAUDE.md's Tech stack section calls for
-# them, but no instrumentation exists in the service yet either — an empty
-# Prometheus config scraping nothing is dead weight. Add them here once that
-# phase actually ships something worth scraping.
+# Observability: OpenTelemetry (in-process SDK, no separate container) →
+# Prometheus → Grafana, per CLAUDE.md's Tech stack section. The app exposes
+# Prometheus-formatted metrics on its own internal-only port (METRICS_PORT,
+# default 9464) — see internal/metrics and cmd/server/main.go — which is NOT
+# the port the proxy below reaches; the Caddyfile's site block proxies
+# everything on the app's main port to the internet with no path matching, so
+# /metrics has to live somewhere Caddy never sees. prometheus scrapes that
+# port over this internal network; grafana queries prometheus the same way
+# and is the only one of the two actually reachable externally (via its own
+# Caddy site block), since it's the human-facing UI.
 #
 # One-time setup on the VPS, before the first `up`:
 #   1. cp .env.example .env, then fill in production secrets. chmod 600 it.
 #      NEVER commit this file — see docs/ENVIRONMENT.md.
-#   2. Point DNS at this host, then edit Caddyfile's placeholder domain.
+#   2. Point DNS at this host (both the main domain and grafana.<domain>),
+#      then edit Caddyfile's placeholder domains.
 #   3. After the first `up` brings Postgres online, provision the read-only
 #      API role ONCE (not automated here — see docs/ENVIRONMENT.md, "The
 #      query API's database role"):
@@ -80,8 +86,39 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+      - grafana
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - app
+    # No ports: published — scraped from inside the Compose network only,
+    # same isolation as postgres. Nothing needs to reach Prometheus directly;
+    # Grafana queries it over the internal network.
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      # No default — same "secrets have no defaults" rule as
+      # POSTGRES_PASSWORD above (CLAUDE.md guardrail 4).
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?set GF_SECURITY_ADMIN_PASSWORD in .env}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    # Reachable externally via the proxy's grafana.<domain> site block below —
+    # unlike postgres/prometheus, Grafana's UI is meant to be used from
+    # outside the VPS, gated by its own login rather than network isolation.
 
 volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  prometheus_data:
+  grafana_data:

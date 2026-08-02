@@ -23,9 +23,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/api"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/config"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/importer"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/metrics"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/webhook"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/worker"
@@ -88,6 +92,21 @@ func run() error {
 		if len(applied) > 0 {
 			log.Info("applied migrations", "versions", applied)
 		}
+	}
+
+	shutdownMetrics, err := metrics.Init(ctx)
+	if err != nil {
+		return fmt.Errorf("metrics: %w", err)
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownMetrics(sctx); err != nil {
+			log.Error("metrics shutdown", "err", err)
+		}
+	}()
+	if err := metrics.RegisterHealthGauges(st); err != nil {
+		return fmt.Errorf("metrics: health gauges: %w", err)
 	}
 
 	workerCfg := worker.DefaultConfig()
@@ -160,8 +179,26 @@ func run() error {
 	}
 
 	httpSrv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           mux,
+		Addr: fmt.Sprintf(":%d", cfg.Port),
+		// otelhttp wraps the WHOLE mux, not individual routes, so it reads
+		// Go 1.22+ ServeMux's r.Pattern (e.g. "/events/{id}") for the
+		// http.route label rather than the raw request path — one label per
+		// route, not one per UUID.
+		Handler:           otelhttp.NewHandler(mux, "api"),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Deliberately a SEPARATE server on its own, unpublished port rather than
+	// a route on mux: the Caddyfile's site block proxies everything on
+	// cfg.Port to the internet with no path matching, so /metrics would be
+	// public if it lived there. Isolated the same way postgres is isolated —
+	// reachable only from the prometheus sibling container, over the Compose
+	// network (see compose.yml).
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", promhttp.Handler())
+	metricsSrv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.MetricsPort),
+		Handler:           metricsMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -169,6 +206,13 @@ func run() error {
 	go func() {
 		log.Info("listening", "addr", httpSrv.Addr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	go func() {
+		log.Info("metrics listening", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -189,6 +233,9 @@ func run() error {
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdown); err != nil {
 		log.Error("http shutdown", "err", err)
+	}
+	if err := metricsSrv.Shutdown(shutdown); err != nil {
+		log.Error("metrics http shutdown", "err", err)
 	}
 	log.Info("stopped")
 	return nil

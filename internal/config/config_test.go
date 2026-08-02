@@ -112,6 +112,41 @@ func TestLoad_PortValidation(t *testing.T) {
 	}
 }
 
+func TestLoad_MetricsPortValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    int
+		wantErr bool
+	}{
+		{"default", "", 9464, false},
+		{"valid", "9999", 9999, false},
+		{"not a number", "http", 0, true},
+		{"zero", "0", 0, true},
+		{"too large", "70000", 0, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("METRICS_PORT", tc.env)
+
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for METRICS_PORT=%q", tc.env)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.MetricsPort != tc.want {
+				t.Errorf("MetricsPort = %d, want %d", cfg.MetricsPort, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoad_RequiredMissing(t *testing.T) {
 	t.Setenv("TT_API_KEY", "")
 	t.Setenv("PAYPAL_SECRET", "")

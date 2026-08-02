@@ -34,8 +34,11 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/metrics"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/recon"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
@@ -192,10 +195,14 @@ func (w *Worker) DrainStageOne(ctx context.Context) (processed, failed int, err 
 				// The row is stored but unusable. Dead-lettering it here keeps a
 				// malformed payload out of the reconcile pass, where it would
 				// abort the whole thing.
-				if err := w.store.MarkFailed(ctx, r.ID, verr,
-					w.backoffFor(r.RetryCount), w.cfg.MaxRetries); err != nil {
+				outcome, err := w.store.MarkFailed(ctx, r.ID, verr,
+					w.backoffFor(r.RetryCount), w.cfg.MaxRetries)
+				if err != nil {
 					return processed, failed, err
 				}
+				metrics.WorkerFailures.Add(ctx, 1, metric.WithAttributes(
+					attribute.String("resource_type", string(r.ResourceType)),
+					attribute.String("outcome", string(outcome))))
 				failed++
 			case r.ResourceType == model.ResourceOther:
 				ignored = append(ignored, r.ID)
@@ -209,6 +216,14 @@ func (w *Worker) DrainStageOne(ctx context.Context) (processed, failed int, err 
 		}
 		if err := w.store.MarkIgnored(ctx, ignored); err != nil {
 			return processed, failed, err
+		}
+		if len(ok) > 0 {
+			metrics.WorkerRows.Add(ctx, int64(len(ok)), metric.WithAttributes(
+				attribute.String("outcome", "processed")))
+		}
+		if len(ignored) > 0 {
+			metrics.WorkerRows.Add(ctx, int64(len(ignored)), metric.WithAttributes(
+				attribute.String("outcome", "ignored")))
 		}
 		processed += len(ok) + len(ignored)
 
@@ -268,9 +283,11 @@ func (w *Worker) MaybeReconcile(ctx context.Context) (store.ReconcileResult, str
 	// Steady state. One indexed aggregate and we are done — this is the common
 	// case and it must stay cheap.
 	if !watermark.IsZero() && watermark.Equal(state.LastInputUpdatedAt) {
+		recordReconcileRun(ctx, "unchanged")
 		return zero, "input unchanged", nil
 	}
 	if watermark.IsZero() {
+		recordReconcileRun(ctx, "no_rows")
 		return zero, "no reconcilable rows", nil
 	}
 
@@ -279,6 +296,7 @@ func (w *Worker) MaybeReconcile(ctx context.Context) (store.ReconcileResult, str
 	quietFor := time.Since(watermark)
 	staleFor := time.Since(state.LastRunAt)
 	if quietFor < w.cfg.QuietPeriod && staleFor < w.cfg.MaxStaleness {
+		recordReconcileRun(ctx, "settling")
 		return zero, fmt.Sprintf("input still settling (%s)", quietFor.Round(time.Millisecond)), nil
 	}
 
@@ -287,9 +305,18 @@ func (w *Worker) MaybeReconcile(ctx context.Context) (store.ReconcileResult, str
 		return zero, "", err
 	}
 	if !res.Ran {
+		recordReconcileRun(ctx, "lock_held")
 		return res, "another worker holds the reconcile lock", nil
 	}
 	return res, "", nil
+}
+
+// recordReconcileRun records ReconcileRuns with a small, fixed result
+// category. Deliberately not fed MaybeReconcile's free-text skip reason
+// (e.g. "input still settling (340ms)") — that string is unbounded
+// cardinality and must never reach a metric label.
+func recordReconcileRun(ctx context.Context, result string) {
+	metrics.ReconcileRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
 }
 
 // Reconcile forces a pass regardless of the debounce.
@@ -310,6 +337,7 @@ func (w *Worker) Reconcile(ctx context.Context, watermark time.Time) (store.Reco
 		return store.ReconcileResult{}, err
 	}
 
+	start := time.Now()
 	res, err := w.store.Reconcile(ctx, runID, func(rows []store.RawResource) ([]store.Verdict, error) {
 		inputs, err := ingest.DecodeResources(rows)
 		if err != nil {
@@ -344,6 +372,10 @@ func (w *Worker) Reconcile(ctx context.Context, watermark time.Time) (store.Reco
 	if err := w.store.RecordReconRun(ctx, runID, watermark, res.Changed); err != nil {
 		return res, err
 	}
+
+	metrics.ReconcileSeconds.Record(ctx, time.Since(start).Seconds())
+	recordReconcileRun(ctx, "ran")
+	metrics.ReconcileChanged.Add(ctx, res.Changed)
 
 	w.log.Info("reconciled",
 		"run", runID, "resources", res.Resources, "verdicts_changed", res.Changed)

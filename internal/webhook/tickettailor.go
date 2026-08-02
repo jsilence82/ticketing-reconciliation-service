@@ -19,7 +19,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/metrics"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 )
@@ -196,6 +200,11 @@ func (h *TicketTailorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+
+	metrics.EventsIngested.Add(r.Context(), 1, metric.WithAttributes(
+		attribute.String("source", "tickettailor"),
+		attribute.String("resource_type", string(rec.ResourceType)),
+		attribute.String("outcome", string(outcome))))
 
 	h.log.Info("ticket tailor webhook: received",
 		"event", env.Event, "resource_type", rec.ResourceType,

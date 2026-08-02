@@ -7,3 +7,14 @@
 reconciliation.example.org {
 	reverse_proxy app:8080
 }
+
+# Grafana — the only observability UI reachable from outside the VPS.
+# Prometheus itself has no site block: it holds no secrets a human needs to
+# see directly, and Grafana already queries it over the internal Compose
+# network (see deploy/grafana/provisioning/datasources). Gated by Grafana's
+# own login (GF_SECURITY_ADMIN_PASSWORD in .env), not by Caddy.
+#
+# Replace with the real subdomain before first deploy.
+grafana.example.org {
+	reverse_proxy grafana:3000
+}

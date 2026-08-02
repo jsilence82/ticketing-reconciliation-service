@@ -1,0 +1,13 @@
+# Scrape config for the prometheus service in compose.yml.
+#
+# One target: the app container's internal-only metrics port (METRICS_PORT,
+# default 9464 — see internal/metrics and cmd/server/main.go). Not the app's
+# main port; that one is reverse-proxied to the internet by Caddy and has no
+# path-based access control, so /metrics deliberately lives elsewhere.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: ticketing-reconciliation-service
+    static_configs:
+      - targets: ["app:9464"]

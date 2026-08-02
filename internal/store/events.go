@@ -229,6 +229,19 @@ func (s *Store) setStatus(ctx context.Context, ids []string, status string) erro
 	return nil
 }
 
+// FailureOutcome reports which branch MarkFailed's UPDATE took, mirroring
+// Outcome's naming convention. It is the metrics signal CLAUDE.md asks for
+// under "retries" and "dead-letters" — sourced from the SQL's own RETURNING
+// clause rather than re-deriving retry_count+1 >= maxRetries a second time in
+// Go, so that comparison lives in exactly one place.
+type FailureOutcome string
+
+// MarkFailed outcomes.
+const (
+	Retrying     FailureOutcome = "retrying"
+	DeadLettered FailureOutcome = "dead_lettered"
+)
+
 // MarkFailed records a failure and schedules the next attempt.
 //
 // The backoff interval is computed by the caller (with cenkalti/backoff and
@@ -236,13 +249,14 @@ func (s *Store) setStatus(ctx context.Context, ids []string, status string) erro
 // database. Crossing maxRetries dead-letters the row.
 func (s *Store) MarkFailed(
 	ctx context.Context, id string, cause error, retryAfter time.Duration, maxRetries int,
-) error {
+) (FailureOutcome, error) {
 	msg := ""
 	if cause != nil {
 		msg = cause.Error()
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	var status string
+	err := s.pool.QueryRow(ctx, `
 		UPDATE events
 		   SET retry_count     = retry_count + 1,
 		       last_error      = $2,
@@ -250,12 +264,18 @@ func (s *Store) MarkFailed(
 		       status          = CASE WHEN retry_count + 1 >= $4
 		                              THEN 'dead_lettered' ELSE 'failed' END,
 		       updated_at      = now()
-		 WHERE id = $1`,
-		id, msg, retryAfter.String(), maxRetries)
+		 WHERE id = $1
+		RETURNING status`,
+		id, msg, retryAfter.String(), maxRetries,
+	).Scan(&status)
 	if err != nil {
-		return fmt.Errorf("mark failed %s: %w", id, err)
+		return "", fmt.Errorf("mark failed %s: %w", id, err)
 	}
-	return nil
+
+	if status == "dead_lettered" {
+		return DeadLettered, nil
+	}
+	return Retrying, nil
 }
 
 // Verdict is one per-resource reconciliation outcome to persist.

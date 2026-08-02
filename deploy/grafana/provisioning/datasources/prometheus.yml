@@ -1,0 +1,10 @@
+# Grafana file-based provisioning: registers the prometheus service in
+# compose.yml as Grafana's default datasource, so a fresh Grafana container
+# has something to query without manual UI setup.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

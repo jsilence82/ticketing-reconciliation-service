@@ -20,6 +20,14 @@ type Config struct {
 	// Port is the HTTP listen port. Defaults to 8080.
 	Port int
 
+	// MetricsPort is the internal-only port serving Prometheus scrapes.
+	// Deliberately NOT the same mux Port serves: the Caddyfile's site block
+	// proxies everything on Port to the internet with no path matching, so
+	// /metrics has to live elsewhere to stay internal-only. Not published by
+	// compose.yml — only the prometheus sibling container reaches it, over
+	// the Compose network. Defaults to 9464, the OTel/Prometheus convention.
+	MetricsPort int
+
 	// DatabaseURL is the Postgres connection string used by the worker, which
 	// writes.
 	DatabaseURL string
@@ -96,6 +104,7 @@ func (e *MissingError) Error() string {
 func Load(required ...string) (*Config, error) {
 	cfg := &Config{
 		Port:           8080,
+		MetricsPort:    9464,
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		APIDatabaseURL: os.Getenv("API_DATABASE_URL"),
 		APIKeys:        os.Getenv("API_KEYS"),
@@ -121,6 +130,17 @@ func Load(required ...string) (*Config, error) {
 			return nil, fmt.Errorf("PORT=%d out of range 1-65535", p)
 		}
 		cfg.Port = p
+	}
+
+	if v := os.Getenv("METRICS_PORT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("METRICS_PORT=%q is not a number: %w", v, err)
+		}
+		if p < 1 || p > 65535 {
+			return nil, fmt.Errorf("METRICS_PORT=%d out of range 1-65535", p)
+		}
+		cfg.MetricsPort = p
 	}
 
 	// Production must be selected explicitly. Any value other than a clear

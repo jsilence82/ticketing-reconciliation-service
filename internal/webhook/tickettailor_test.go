@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/store"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/webhook"
@@ -182,6 +185,18 @@ func TestTicketTailorHandler_ValidOrderCreated(t *testing.T) {
 	}
 	if got.SignatureVerifiedAt == nil {
 		t.Error("SignatureVerifiedAt is nil, want set")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := testMetricsReader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	attrs := attribute.NewSet(
+		attribute.String("source", "tickettailor"),
+		attribute.String("resource_type", string(model.ResourceOrder)),
+		attribute.String("outcome", "inserted"))
+	if got := findMetricSum(t, rm, "events.ingested", attrs); got < 1 {
+		t.Errorf("events.ingested{source=tickettailor,resource_type=order,outcome=inserted} = %d, want >= 1", got)
 	}
 }
 

@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/importer"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/ingest"
+	"github.com/jsilence82/ticketing-reconciliation-service/internal/metrics"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 )
 
@@ -100,6 +104,11 @@ func (h *PayPalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+
+	metrics.EventsIngested.Add(r.Context(), 1, metric.WithAttributes(
+		attribute.String("source", "paypal"),
+		attribute.String("resource_type", string(rec.ResourceType)),
+		attribute.String("outcome", string(outcome))))
 
 	h.log.Info("paypal webhook: received",
 		"topic", rec.Topic, "resource_type", rec.ResourceType,

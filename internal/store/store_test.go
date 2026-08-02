@@ -535,8 +535,12 @@ func TestMarkFailedBacksOffThenDeadLetters(t *testing.T) {
 	id := claimed[0].ID
 
 	// First failure: backed off into the future, so it must not be re-claimable.
-	if err := s.MarkFailed(c, id, errors.New("boom"), time.Hour, 3); err != nil {
+	outcome, err := s.MarkFailed(c, id, errors.New("boom"), time.Hour, 3)
+	if err != nil {
 		t.Fatalf("mark failed: %v", err)
+	}
+	if outcome != Retrying {
+		t.Errorf("outcome = %q, want %q", outcome, Retrying)
 	}
 	got, err := s.GetEvent(c, id)
 	if err != nil {
@@ -556,10 +560,17 @@ func TestMarkFailedBacksOffThenDeadLetters(t *testing.T) {
 		t.Errorf("a backed-off row was re-claimed immediately (%d rows)", len(again))
 	}
 
-	// Exhausting the budget dead-letters.
-	for i := 0; i < 2; i++ {
-		if err := s.MarkFailed(c, id, errors.New("boom"), 0, 3); err != nil {
+	// Exhausting the budget dead-letters. retry_count is 1 going in and
+	// maxRetries is 3, so the first of these two calls (retry_count 1->2)
+	// is still retrying; the second (2->3) crosses the threshold.
+	wantOutcomes := []FailureOutcome{Retrying, DeadLettered}
+	for i, want := range wantOutcomes {
+		outcome, err := s.MarkFailed(c, id, errors.New("boom"), 0, 3)
+		if err != nil {
 			t.Fatalf("mark failed: %v", err)
+		}
+		if outcome != want {
+			t.Errorf("iteration %d: outcome = %q, want %q", i, outcome, want)
 		}
 	}
 	got, err = s.GetEvent(c, id)

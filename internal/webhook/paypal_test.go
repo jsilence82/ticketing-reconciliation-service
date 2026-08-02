@@ -7,12 +7,55 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/importer"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/webhook"
 )
+
+// testMetricsReader is installed exactly once, in TestMain, for the whole
+// webhook_test binary (paypal_test.go and tickettailor_test.go share it) —
+// see the identical reasoning in internal/metrics/metrics_test.go: otel's
+// no-op-to-real MeterProvider delegation only fires on the FIRST
+// SetMeterProvider call in a process.
+var testMetricsReader = sdkmetric.NewManualReader()
+
+func TestMain(m *testing.M) {
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(testMetricsReader))
+	otel.SetMeterProvider(provider)
+	os.Exit(m.Run())
+}
+
+// findMetricSum locates a Sum[int64] data point matching name/attrs, or
+// fails the test.
+func findMetricSum(t *testing.T, rm metricdata.ResourceMetrics, name string, attrs attribute.Set) int64 {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q is not a Sum[int64]: %T", name, m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				if dp.Attributes.Equals(&attrs) {
+					return dp.Value
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attributes %v not found in %+v", name, attrs, rm)
+	return 0
+}
 
 // fakeVerifier substitutes for a real call to PayPal's
 // verify-webhook-signature endpoint, and records the request it was asked to
@@ -101,6 +144,18 @@ func TestPayPalHandler_ValidCaptureCompleted(t *testing.T) {
 	}
 	if got.SignatureVerifiedAt == nil {
 		t.Error("SignatureVerifiedAt is nil, want set")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := testMetricsReader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	attrs := attribute.NewSet(
+		attribute.String("source", "paypal"),
+		attribute.String("resource_type", string(model.ResourcePayPalTransaction)),
+		attribute.String("outcome", "inserted"))
+	if got := findMetricSum(t, rm, "events.ingested", attrs); got < 1 {
+		t.Errorf("events.ingested{source=paypal,resource_type=paypal_transaction,outcome=inserted} = %d, want >= 1", got)
 	}
 }
 
