@@ -1,16 +1,11 @@
 // Package migrate applies the embedded SQL migrations.
 //
-// This is a ~150-line applier rather than goose or golang-migrate, for two
-// reasons. CLAUDE.md mandates `V{n}__snake_case.sql` naming and neither tool
-// uses it — goose wants `NNNNN_name.sql` with annotation comments,
-// golang-migrate wants `{version}_{name}.{up|down}.sql` — so adopting one means
-// either violating the spec or forking its filename parser. And for a handful of
-// forward-only DDL files against one table, in a module that deliberately keeps
-// its dependency list tiny, the applier is cheaper than the dependency.
+// This is a ~150-line applier rather than goose or golang-migrate — see
+// docs/ARCHITECTURE.md, "Migration tooling" for why.
 //
 // Migrations are forward-only. There are no down migrations: rollback for a
-// single-table schema is the Postgres restore CLAUDE.md already requires, and a
-// down migration that has never been run is a down migration that does not work.
+// single-table schema is a Postgres restore (see docs/BACKUP.md), and a down
+// migration that has never been run is a down migration that does not work.
 package migrate
 
 import (

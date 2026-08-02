@@ -17,9 +17,9 @@
 // triggers a handful of passes rather than 4,000.
 //
 // The alternative — maintaining the match incrementally — was rejected
-// deliberately. It would require a second implementation of the matching rule
-// living outside internal/recon, which is exactly what guardrail 2 forbids and
-// what the depguard rule exists to prevent. A full pass over a few thousand rows
+// deliberately. It would require a second implementation of the matching
+// rule living outside internal/recon, which the depguard rule in
+// .golangci.yml exists to prevent. A full pass over a few thousand rows
 // is milliseconds; trading a divergence risk in the one piece of logic that must
 // not diverge, to save that, is a bad bargain.
 package worker

@@ -35,8 +35,7 @@ import (
 //	print(hmac.new(secret.encode(), timestamp.encode()+body, hashlib.sha256).hexdigest())
 //	"
 //
-// That is the same guardrail CLAUDE.md applies to money parity: a signature
-// scheme validated only against itself proves nothing.
+// A signature scheme validated only against itself proves nothing.
 const (
 	testSecret    = "whsec_test_shared_secret"
 	testTimestamp = "1735689600"
@@ -228,7 +227,7 @@ func TestTicketTailorHandler_InvalidSignatureRejected(t *testing.T) {
 func TestTicketTailorHandler_UnknownResourceStoredAsIgnored(t *testing.T) {
 	// A waitlist signup (or any future event type) has no "object" mapping in
 	// ttObjectTypes, so it becomes ResourceOther/ignored rather than a hard
-	// failure — CLAUDE.md: stored for the audit trail, never reconciled.
+	// failure — stored for the audit trail, never reconciled.
 	body := envelope(t, "wh_17", "WAITLIST_SIGNUP.CREATED", map[string]any{
 		"object": "waitlist_signup", "id": "wl_1", "created_at": 1710000000,
 	})
@@ -278,9 +277,8 @@ func TestTicketTailorHandler_StorageErrorReturns500(t *testing.T) {
 }
 
 func TestTicketTailorHandler_StaleTimestampStillAccepted(t *testing.T) {
-	// CLAUDE.md is explicit: a blanket 5-minute reject would break Ticket
-	// Tailor's own 72-hour retry policy. An old but validly-signed, novel
-	// delivery must still be processed.
+	// A blanket 5-minute reject would break Ticket Tailor's own 72-hour retry
+	// policy. An old but validly-signed, novel delivery must still be processed.
 	body := envelope(t, "wh_19", "ORDER.CREATED", map[string]any{
 		"object": "order", "id": "or_stale", "created_at": 1710000000,
 	})

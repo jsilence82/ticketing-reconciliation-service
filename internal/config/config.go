@@ -1,10 +1,8 @@
 // Package config loads service configuration from the environment.
 //
-// Deliberate design choice: secrets have NO defaults. A missing credential is a
-// startup error, never a silently-substituted development value. The reference
-// project this repo's CI conventions come from defaults its credentials inline,
-// which is precisely how a service ends up talking to production with test
-// settings — see CLAUDE.md guardrail 4.
+// Deliberate design choice: secrets have NO defaults. A missing credential is
+// a startup error, never a silently-substituted development value — that is
+// precisely how a service ends up talking to production with test settings.
 package config
 
 import (
@@ -34,10 +32,10 @@ type Config struct {
 
 	// APIDatabaseURL is the connection string the read-only query API uses.
 	//
-	// Deliberately separate from DatabaseURL: guardrail 3 requires that no
-	// endpoint be able to mutate state, and the way to guarantee that is a role
-	// with SELECT only (see deploy/readonly-role.sql). The server proves the
-	// role really is read-only at startup rather than assuming it.
+	// Deliberately separate from DatabaseURL: no endpoint may mutate state, and
+	// the way to guarantee that is a role with SELECT only (see
+	// deploy/readonly-role.sql). The server proves the role really is
+	// read-only at startup rather than assuming it.
 	APIDatabaseURL string
 
 	// APIKeys is "name:key,name:key" — one key per consumer, so a single
@@ -56,7 +54,7 @@ type Config struct {
 	// data for the parity harness. Empty means the parity tests skip.
 	//
 	// It is intentionally NOT a path inside the repo: that data is live and
-	// contains buyer PII, and CLAUDE.md forbids it in this tree in any form.
+	// contains buyer PII, which must never exist in this tree in any form.
 	ParityDataDir string
 }
 
@@ -72,7 +70,7 @@ type PayPalConfig struct {
 	ClientID string
 	Secret   string
 	// Sandbox selects the sandbox host. It defaults to TRUE: development must
-	// opt IN to production, never out of it (guardrail 4).
+	// opt IN to production, never out of it.
 	Sandbox bool
 	// WebhookID is required to verify inbound webhook signatures.
 	WebhookID string
@@ -192,4 +190,4 @@ func (c *Config) require(names []string) error {
 // ErrLiveNotPermitted is returned when a command that touches live provider
 // accounts is invoked without explicit opt-in.
 var ErrLiveNotPermitted = errors.New(
-	"refusing to use live provider credentials: pass --live to confirm (CLAUDE.md guardrail 4)")
+	"refusing to use live provider credentials: pass --live to confirm")

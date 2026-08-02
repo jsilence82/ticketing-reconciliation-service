@@ -2,8 +2,8 @@
 // emits the result as JSON for cell-by-cell diffing against the Python
 // reference.
 //
-// This is the gate described in CLAUDE.md guardrail 1: no live webhook
-// subscription until this output matches the dashboard across real history.
+// This is the gate: no live webhook subscription until this output matches
+// the dashboard across real history.
 //
 // Pair it with tools/parity/driver.py, which produces the same JSON shape from
 // the unmodified reference implementation, then diff the two files.
@@ -139,7 +139,7 @@ func main() {
 		}
 		if dir == "" {
 			fmt.Fprintln(os.Stderr, "no snapshot directory: pass -data or set SSG_PARITY_DATA")
-			fmt.Fprintln(os.Stderr, "It must point OUTSIDE this repository (see CLAUDE.md).")
+			fmt.Fprintln(os.Stderr, "It must point OUTSIDE this repository — see docs/ENVIRONMENT.md.")
 			os.Exit(2)
 		}
 	}

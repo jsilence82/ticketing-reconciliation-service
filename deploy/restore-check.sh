@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Restores the latest backup.sh snapshot into a throwaway Postgres container
-# and runs a sanity check, so "verify a restore at least once" (CLAUDE.md,
-# Deployment) is a proven fact rather than an assumption. Modeled on
-# docs/PARITY.md: this is meant to be run, its result recorded in
-# docs/BACKUP.md, and re-run again after any change to backup.sh or the
-# schema — not wired into CI as a continuous check, the same reasoning that
-# keeps make parity a deliberate act rather than a pre-commit hook.
+# and runs a sanity check, so "verify a restore at least once" is a proven
+# fact rather than an assumption. Modeled on docs/PARITY.md: this is meant to
+# be run, its result recorded in docs/BACKUP.md, and re-run again after any
+# change to backup.sh or the schema — not wired into CI as a continuous
+# check, the same reasoning that keeps make parity a deliberate act rather
+# than a pre-commit hook.
 #
 # Talks only to a disposable `docker run` container, never to the real
 # `postgres` compose service — a restore check must not be able to touch

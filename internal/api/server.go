@@ -3,16 +3,13 @@
 // The service is the source of truth for reconciled event data, not a report
 // generator. There is deliberately no /reconciliation/summary or
 // /reconciliation/categories: Totals and Statistics are computed on demand by
-// whoever needs them, from the raw events served here. See CLAUDE.md,
-// Persistence & read model.
+// whoever needs them, from the raw events served here.
 //
-// # Read-only is structural, not conventional
-//
-// Guardrail 3 says no endpoint may mutate state. Rather than trusting that no
-// handler ever writes, the server takes a store whose database role has SELECT
-// only, and PROVES it at startup by attempting a write and requiring it to
-// fail. A configuration that would let the API write is a boot failure, not a
-// latent risk.
+// Read-only is structural, not conventional: rather than trusting that no
+// handler ever writes, the server takes a store whose database role has
+// SELECT only, and PROVES it at startup by attempting a write and requiring
+// it to fail. See docs/ARCHITECTURE.md, "Read-only is structural, not
+// conventional".
 package api
 
 import (
@@ -47,7 +44,7 @@ func New(st *store.Store, consumers Consumers, log *slog.Logger) *Server {
 }
 
 // Routes returns the mux. net/http with Go 1.22 method-and-path patterns; no
-// framework, per CLAUDE.md.
+// framework.
 func (s *Server) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -64,11 +61,10 @@ func (s *Server) Routes() *http.ServeMux {
 // VerifyReadOnly proves the API cannot write, by trying to and requiring
 // failure.
 //
-// This is the enforcement guardrail 3 asks for. Documentation saying "use a
-// SELECT-only role" is not enforcement; a boot-time check that fails loudly when
-// the role is over-privileged is. The write is attempted inside a transaction
-// that is always rolled back, so even a misconfigured role leaves nothing
-// behind.
+// Documentation saying "use a SELECT-only role" is not enforcement; a
+// boot-time check that fails loudly when the role is over-privileged is. The
+// write is attempted inside a transaction that is always rolled back, so even
+// a misconfigured role leaves nothing behind.
 func (s *Server) VerifyReadOnly(ctx context.Context) error {
 	writable, err := s.store.ProbeWritable(ctx)
 	if err != nil {
@@ -76,8 +72,8 @@ func (s *Server) VerifyReadOnly(ctx context.Context) error {
 	}
 	if writable {
 		return errors.New(
-			"the API's database role can INSERT into events. Guardrail 3 requires " +
-				"a SELECT-only role — set API_DATABASE_URL to a read-only user " +
+			"the API's database role can INSERT into events. It must be a " +
+				"SELECT-only role — set API_DATABASE_URL to a read-only user " +
 				"(see deploy/readonly-role.sql). Refusing to serve")
 	}
 
@@ -110,12 +106,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // unresolvedCounts tallies tickets whose order or event has not been seen yet.
 //
-// CLAUDE.md, Persistence & read model: a missing parent reads as empty/zero at
-// assemble time rather than erroring, which is correct for the matching rule
-// but means an orphan silently changes a night's numbers unless something
-// surfaces it — this is that something. Reuses the same LoadResources +
-// DecodeResources path the reconcile pass uses, rather than a bespoke query,
-// so the two can never disagree about what "unresolved" means.
+// A missing parent reads as empty/zero at assemble time rather than erroring,
+// which is correct for the matching rule but means an orphan silently
+// changes a night's numbers unless something surfaces it — this is that
+// something. Reuses the same LoadResources + DecodeResources path the
+// reconcile pass uses, rather than a bespoke query, so the two can never
+// disagree about what "unresolved" means.
 func (s *Server) unresolvedCounts(ctx context.Context) (unresolvedDTO, error) {
 	rows, err := s.store.LoadResources(ctx)
 	if err != nil {

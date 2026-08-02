@@ -43,9 +43,9 @@ const batchSize = 500
 
 // ImportSnapshot loads a captured snapshot into the store.
 //
-// This is the offline ingestion path. It reaches no provider API and needs no
-// credentials, which is what lets the parity-through-Postgres run satisfy
-// guardrail 1 without a single live call.
+// This is the offline ingestion path. It reaches no provider API and needs
+// no credentials, which is what lets the parity-through-Postgres run prove
+// the engine end to end without a single live call.
 //
 // Resources are imported in dependency order — events and series first, then
 // orders, then tickets — so that at any point mid-import a ticket's parents are

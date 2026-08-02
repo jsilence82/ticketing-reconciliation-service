@@ -21,14 +21,12 @@ import (
 // handful of KB, this only guards against an unbounded stream.
 const maxPayPalBody = 5 << 20 // 5 MiB
 
-// PayPalVerifier checks a webhook delivery's signature.
-//
-// CLAUDE.md, Architecture, records the choice behind this shape as deliberate
-// (2026-08-01): it calls PayPal's own /v1/notifications/verify-webhook-signature
-// endpoint rather than validating the X.509 cert chain offline, delegating the
-// security-sensitive part to PayPal rather than reimplementing it.
-// *importer.PayPalClient satisfies this interface structurally — no adapter
-// needed — and tests substitute a fake.
+// PayPalVerifier checks a webhook delivery's signature by calling PayPal's
+// own /v1/notifications/verify-webhook-signature endpoint rather than
+// validating the X.509 cert chain offline — see docs/ARCHITECTURE.md,
+// "Webhook signature verification" for why. *importer.PayPalClient satisfies
+// this interface structurally — no adapter needed — and tests substitute a
+// fake.
 type PayPalVerifier interface {
 	VerifyWebhookSignature(ctx context.Context, req importer.VerifyWebhookSignatureRequest) (bool, error)
 }

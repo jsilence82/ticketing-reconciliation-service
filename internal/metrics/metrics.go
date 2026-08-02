@@ -1,10 +1,9 @@
 // Package metrics defines this service's OpenTelemetry metric instruments and
 // wires them to a Prometheus-compatible exporter.
 //
-// Metrics only, deliberately. CLAUDE.md's Tech stack line calls for
-// Prometheus/Grafana, which is a metrics backend — this is one binary talking
-// to Postgres, not a multi-service topology, so there is nothing here for
-// distributed tracing to usefully explain.
+// Metrics only, deliberately: this is one binary talking to Postgres, not a
+// multi-service topology, so there is nothing here for distributed tracing
+// to usefully explain.
 package metrics
 
 import (
@@ -32,17 +31,17 @@ const meterName = "github.com/jsilence82/ticketing-reconciliation-service"
 var (
 	meter = otel.Meter(meterName)
 
-	// EventsIngested covers CLAUDE.md's "events received" (sum of all
-	// outcomes) and "dedup hits" (outcome="rejected"). Labels: source,
-	// resource_type, outcome.
+	// EventsIngested covers "events received" (sum of all outcomes) and
+	// "dedup hits" (outcome="rejected"). Labels: source, resource_type,
+	// outcome.
 	EventsIngested metric.Int64Counter
 
 	// WorkerRows covers stage-1 rows that reached a terminal, non-failure
 	// outcome. Label: outcome (processed|ignored).
 	WorkerRows metric.Int64Counter
 
-	// WorkerFailures covers CLAUDE.md's "retries" and "dead-letters".
-	// Labels: resource_type, outcome (retrying|dead_lettered).
+	// WorkerFailures covers "retries" and "dead-letters". Labels:
+	// resource_type, outcome (retrying|dead_lettered).
 	WorkerFailures metric.Int64Counter
 
 	// ReconcileRuns counts stage-2 attempts by a small, fixed result

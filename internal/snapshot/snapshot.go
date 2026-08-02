@@ -6,7 +6,7 @@
 // differently" doubt from a parity failure.
 //
 // The files it reads hold live production data with buyer PII and must live
-// OUTSIDE this repository (CLAUDE.md). Nothing here writes.
+// OUTSIDE this repository. Nothing here writes.
 package snapshot
 
 import (

@@ -3,19 +3,17 @@
 // # This is a verification oracle, not a product surface
 //
 // The service deliberately does not produce aggregated views — Totals and
-// Statistics are computed on demand by consumers from raw GET /events data (see
-// CLAUDE.md, Persistence & read model). Nothing here may be wired to an HTTP
-// handler or an MCP tool.
+// Statistics are computed on demand by consumers from raw GET /events data.
+// Nothing here may be wired to an HTTP handler or an MCP tool.
 //
-// It exists because guardrail 1 forbids pointing the service at live webhook
-// subscriptions until its output has been diffed against the dashboard's
-// existing results — and those results ARE these two sheets. They are the only
-// artefact there is to compare against. So the aggregation must exist in Go to
-// prove the matching rule is right, even though the matching rule is the only
-// part that ships.
+// It exists because this service's output must be diffed against the
+// dashboard's existing results before it can be trusted — and those results
+// ARE these two sheets. They are the only artefact there is to compare
+// against. So the aggregation must exist in Go to prove the matching rule is
+// right, even though the matching rule is the only part that ships.
 //
-// Do not delete this package for being unreferenced by any endpoint. Deleting it
-// forfeits the parity evidence and leaves guardrail 1 unsatisfiable.
+// Do not delete this package for being unreferenced by any endpoint. Deleting
+// it forfeits the parity evidence this package exists to produce.
 package oracle
 
 import (

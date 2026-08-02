@@ -13,9 +13,9 @@ import (
 
 // Normalizers turn a raw provider resource into a storable EventRecord.
 //
-// Both ingestion paths funnel through here, so the resource identity, the
-// version stamp and the PII filter are decided in exactly one place. The
-// backfill importer uses it today; webhook handlers will in P4.
+// Both the backfill importer and the webhook handlers funnel through here, so
+// the resource identity, the version stamp and the PII filter are decided in
+// exactly one place.
 
 // ttObjectTypes maps Ticket Tailor's own `object` discriminator onto our
 // resource types.
@@ -110,9 +110,8 @@ type paypalCacheRecord struct {
 //
 // Note this is the dashboard's NORMALIZED shape, not raw Transaction Search
 // output. Consequently the snapshot path exercises storage and the matching
-// rule, but not the PayPal normalizer — the gross/fee sign conversion CLAUDE.md
-// calls the highest-risk conversion in the project. Closing that needs a
-// sandbox capture of raw transaction_info, which belongs to a later phase.
+// rule, but not the PayPal normalizer's gross/fee sign conversion (see
+// FromPayPalSearch) — that needs a sandbox capture of raw transaction_info.
 func FromPayPalCache(raw []byte, origin model.Origin) (model.EventRecord, error) {
 	var rec paypalCacheRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
@@ -181,15 +180,16 @@ type money struct {
 //
 // # The sign convention
 //
-// CLAUDE.md calls this the highest-risk conversion in the project, and it is:
-// every downstream figure flows through net = gross + fee, so getting it wrong
-// silently doubles or zeroes the fees in every report rather than failing.
+// Every downstream figure flows through net = gross + fee, so getting the
+// sign wrong here silently doubles or zeroes the fees in every report rather
+// than failing loudly. See docs/PARITY.md, "Parity through Postgres" for how
+// this was validated.
 //
 // Transaction Search returns fee_amount ALREADY SIGNED — negative on a charge,
-// positive on a refund — so net is gross PLUS fee, never minus
-// (api/paypal.py:88). Webhooks differ: they report paypal_fee as a positive
-// magnitude in both directions and need explicit negation. That divergence is
-// why both sources normalize here rather than at their call sites.
+// positive on a refund — so net is gross PLUS fee, never minus. Webhooks
+// differ: they report paypal_fee as a positive magnitude in both directions
+// and need explicit negation. That divergence is why both sources normalize
+// here rather than at their call sites.
 func FromPayPalSearch(raw []byte, origin model.Origin) (model.EventRecord, error) {
 	var s searchTransaction
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -265,9 +265,9 @@ type paypalLink struct {
 	Rel  string `json:"rel"`
 }
 
-// paypalWhitelistedTopics mirrors CLAUDE.md, Data sources: there is no
-// webhook equivalent of Transaction Search's balance_affecting_records_only=Y,
-// so every other topic must be stored as ignored rather than reconciled.
+// paypalWhitelistedTopics exists because there is no webhook equivalent of
+// Transaction Search's balance_affecting_records_only=Y, so every other
+// topic must be stored as ignored rather than reconciled.
 var paypalWhitelistedTopics = map[string]bool{
 	"PAYMENT.CAPTURE.COMPLETED": true,
 	"PAYMENT.CAPTURE.REFUNDED":  true,
@@ -314,22 +314,10 @@ type paypalRefundResource struct {
 // so the topic dispatch has to happen here rather than in a caller that treats
 // the resource opaquely.
 //
-// # Confidence
-//
-// PAYMENT.CAPTURE.COMPLETED and PAYMENT.CAPTURE.REFUNDED are PROVEN
-// (2026-08-01) against a real sandbox transaction: an order captured then
-// refunded via the live Sandbox REST API, both deliveries genuinely signed by
-// PayPal, both verified, both normalized correctly (including the fee-sign
-// flip in both directions, and the refund's paypal_reference_id correctly
-// derived from its "up" link — the classifier then paired the two rows
-// correctly). See CLAUDE.md's Architecture status note for the full trace.
-//
-// PAYMENT.CAPTURE.REVERSED is implemented AS IF it shares the refund shape,
-// which matches PayPal's public webhook reference but — unlike COMPLETED and
-// REFUNDED above — has NOT been validated against a real delivery, because
-// triggering a genuine reversal (a bank-initiated chargeback) is not
-// practical to simulate on demand in the sandbox. Confirm against a real
-// delivery before trusting it in production.
+// PAYMENT.CAPTURE.REVERSED is implemented as if it shares the refund shape,
+// but has not been validated against a real delivery — see
+// docs/ARCHITECTURE.md, "Webhook signature verification" for validation
+// status of each topic.
 func FromPayPalWebhook(raw []byte, origin model.Origin) (model.EventRecord, error) {
 	var env paypalWebhookEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -368,11 +356,11 @@ func fromPayPalCaptureResource(env paypalWebhookEnvelope, origin model.Origin) (
 	}
 
 	gross := parseAmount(r.Amount)
-	// Webhook fee is a positive magnitude on both charge and refund
-	// (CLAUDE.md's field mapping table); Transaction Search's convention —
-	// which the rest of this service is normalized to — is negative on a
-	// charge. Negate here, once, so net = gross + fee holds identically
-	// regardless of which path ingested the row.
+	// Webhook fee is a positive magnitude on both charge and refund;
+	// Transaction Search's convention — which the rest of this service is
+	// normalized to — is negative on a charge. Negate here, once, so
+	// net = gross + fee holds identically regardless of which path ingested
+	// the row.
 	fee := -parseAmount(r.SellerReceivableBreakdown.PayPalFee)
 
 	currency := ""
@@ -408,9 +396,9 @@ func fromPayPalRefundResource(env paypalWebhookEnvelope, origin model.Origin) (m
 		currency = r.Amount.CurrencyCode
 	}
 
-	// Never guess an unresolvable reference (CLAUDE.md, Data sources): an
-	// empty string here is exactly what tells recon.Classify to mark the row
-	// ReconPending instead of silently dropping it — see classify.go's
+	// Never guess an unresolvable reference: an empty string here is exactly
+	// what tells recon.Classify to mark the row ReconPending instead of
+	// silently dropping it — see classify.go's
 	// `IsRefund() && PayPalReferenceID == ""` check.
 	ref := paypalParentCaptureID(r.Links)
 
@@ -418,7 +406,7 @@ func fromPayPalRefundResource(env paypalWebhookEnvelope, origin model.Origin) (m
 }
 
 // paypalParentCaptureID extracts the parent capture's id from the refund
-// resource's "up" link (CLAUDE.md: "derive from links[rel=\"up\"]"), e.g.
+// resource's "up" link, e.g.
 // ".../v2/payments/captures/3C679366HD394342E" -> "3C679366HD394342E".
 func paypalParentCaptureID(links []paypalLink) string {
 	for _, l := range links {

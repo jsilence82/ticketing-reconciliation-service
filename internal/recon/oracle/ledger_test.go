@@ -13,7 +13,7 @@ import (
 
 // The behavior ledger in docs/PARITY.md enumerates the reference
 // implementation's accidental-but-deterministic behaviors. Every one must be
-// reproduced bug-for-bug in v1 (CLAUDE.md guardrail 2).
+// reproduced bug-for-bug in v1.
 //
 // Each case below asserts the PYTHON's behavior, not the desirable one. A test
 // here failing means the port drifted toward "correct" and broke parity.
@@ -517,7 +517,7 @@ func TestFlagsDefaultToReferenceBehavior(t *testing.T) {
 	for name, on := range checks {
 		if on {
 			t.Errorf("%s defaults to true; every fix flag must default to false "+
-				"so the zero value reproduces the reference (CLAUDE.md guardrail 2)", name)
+				"so the zero value reproduces the reference", name)
 		}
 	}
 }

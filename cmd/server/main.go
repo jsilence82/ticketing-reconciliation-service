@@ -1,8 +1,7 @@
 // Command server runs the reconciliation worker and the read-only query API.
 //
-// Webhook ingestion is P4 — CLAUDE.md guardrail 1 forbids pointing this service
-// at live webhook subscriptions until its output has been diffed against the
-// dashboard, which `make parity-db` does.
+// This service must not be pointed at live webhook subscriptions until its
+// output has been diffed against the dashboard, which `make parity-db` does.
 //
 // # Two database connections, on purpose
 //
@@ -142,10 +141,10 @@ func run() error {
 	mux := srv.Routes()
 
 	// The webhook route writes through st (the worker's role), never through
-	// the API's read-only pool — guardrail 3 only constrains the query API.
-	// Optional for now: TT_WEBHOOK_SECRET is still being pinned against real
-	// captured deliveries (see CLAUDE.md, P4), so a missing secret disables the
-	// route rather than failing startup.
+	// the API's read-only pool — the read-only requirement only constrains the
+	// query API. A missing secret disables the route with a warning rather
+	// than failing startup, so the rest of the service can still run without
+	// it configured.
 	if cfg.TicketTailor.WebhookSecret == "" {
 		log.Warn("TT_WEBHOOK_SECRET unset: /webhooks/tickettailor is disabled")
 	} else {
@@ -260,21 +259,21 @@ func buildAPI(
 				"anyone. Set API_KEYS, or pass --no-api to run the worker alone")
 	}
 
-	// A dedicated read-only role is the enforcement guardrail 3 asks for.
-	// Sharing the worker's writable role is a development convenience and has to
-	// be asked for explicitly.
+	// A dedicated read-only role is the enforcement mechanism for keeping the
+	// query API from mutating state. Sharing the worker's writable role is a
+	// development convenience and has to be asked for explicitly.
 	readOnly := cfg.APIDatabaseURL != ""
 	target := cfg.APIDatabaseURL
 
 	if !readOnly {
 		if !insecure {
 			return nil, nil, errors.New(
-				"API_DATABASE_URL is unset. Guardrail 3 requires the query API to " +
-					"use a SELECT-only role (see deploy/readonly-role.sql). Pass " +
+				"API_DATABASE_URL is unset. The query API must use a SELECT-only " +
+					"role (see deploy/readonly-role.sql). Pass " +
 					"--insecure-allow-writable-api to override in development")
 		}
 		log.Warn("API is sharing the worker's writable database role; " +
-			"guardrail 3 is NOT enforced in this process")
+			"the read-only guarantee is NOT enforced in this process")
 		target = writeURL
 	}
 

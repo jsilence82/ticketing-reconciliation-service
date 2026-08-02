@@ -27,9 +27,8 @@ const liveBatch = 500
 // on it — the read-time join is a LEFT JOIN — but a half-imported database is
 // easier to reason about.
 //
-// FULL RESYNC is the only mode offered. CLAUDE.md is explicit that a
-// `created_at` watermark misses refunds posted against old orders, and this
-// service has no way to detect that omission after the fact.
+// FULL RESYNC is the only mode offered — see docs/ARCHITECTURE.md, "Backfill
+// is always a full resync" for why a `created_at` watermark isn't safe here.
 func ImportTicketTailor(ctx context.Context, c *TicketTailorClient, w Writer) (Report, error) {
 	report := Report{Outcomes: map[store.Outcome]int{}}
 

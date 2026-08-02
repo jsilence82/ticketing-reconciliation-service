@@ -15,7 +15,7 @@ import (
 //
 // Rejected is a real signal, not an error: it means the incoming write was
 // older than, or identical to, what is already stored. It is the dedup-hit
-// metric CLAUDE.md asks for.
+// metric internal/metrics reports.
 type Outcome string
 
 // Upsert outcomes.
@@ -230,10 +230,10 @@ func (s *Store) setStatus(ctx context.Context, ids []string, status string) erro
 }
 
 // FailureOutcome reports which branch MarkFailed's UPDATE took, mirroring
-// Outcome's naming convention. It is the metrics signal CLAUDE.md asks for
-// under "retries" and "dead-letters" — sourced from the SQL's own RETURNING
-// clause rather than re-deriving retry_count+1 >= maxRetries a second time in
-// Go, so that comparison lives in exactly one place.
+// Outcome's naming convention. It is the "retries" vs. "dead-letters" metrics
+// signal, sourced from the SQL's own RETURNING clause rather than re-deriving
+// retry_count+1 >= maxRetries a second time in Go, so that comparison lives
+// in exactly one place.
 type FailureOutcome string
 
 // MarkFailed outcomes.

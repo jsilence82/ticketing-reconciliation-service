@@ -17,9 +17,8 @@ linters:
       rules:
         # internal/recon is the ported reconciliation logic. It must stay a
         # pure library — plain slices in, plain structs out — so the parity
-        # harness can drive it directly. This is what makes CLAUDE.md
-        # guardrail 2 mechanically enforceable rather than a convention
-        # someone erodes during a busy week.
+        # harness can drive it directly, and so the matching rule cannot
+        # silently diverge from the ported behavior.
         recon-stays-pure:
           files:
             - "**/internal/recon/**"
@@ -34,10 +33,10 @@ linters:
             - pkg: "github.com/jsilence82/ticketing-reconciliation-service/internal/store"
               desc: "internal/recon must not depend on the store package"
 
-        # CLAUDE.md: internal/store is "the ONLY package containing SQL".
-        # Denying the driver everywhere else turns that from a comment into a
-        # build failure, so a query cannot quietly appear in a handler.
-        # cmd/ is exempt because binaries construct the pool and pass it in.
+        # internal/store is the ONLY package containing SQL. Denying the
+        # driver everywhere else turns that from a comment into a build
+        # failure, so a query cannot quietly appear in a handler. cmd/ is
+        # exempt because binaries construct the pool and pass it in.
         sql-lives-in-store:
           files:
             - "$all"

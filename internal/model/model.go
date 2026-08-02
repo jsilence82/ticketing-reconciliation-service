@@ -3,14 +3,15 @@
 //
 // These types deliberately contain no buyer PII. The dashboard's canonical frame
 // carries email/buyer_name/buyer_id for its repeat-buyer analysis, but
-// reconciliation never reads them, and omitting them shrinks the blast radius of
-// the access-control requirement in CLAUDE.md.
+// reconciliation never reads them, and omitting them shrinks the blast radius
+// of who needs access to this data.
 //
 // # Storage shape
 //
 // There is exactly one persisted table, `events`, holding one row per real-world
 // resource keyed on (source, resource_id). There is NO projection/derived-table
-// layer — an earlier design had one and it was deliberately removed. The joined
+// layer — an earlier design had one and it was deliberately removed; see
+// docs/ARCHITECTURE.md, "No projection/derived-table layer". The joined
 // CanonicalTicket below is assembled at READ time (see assemble.go), never
 // stored.
 package model
@@ -171,8 +172,8 @@ type EventRecord struct {
 // IsNewerThan reports whether e should overwrite prev in the version-ordered
 // upsert: strictly newer by the provider's clock, or equal-but-better-sourced.
 //
-// This mirrors the SQL guard in CLAUDE.md and exists so the same rule can be
-// unit-tested without a database.
+// This mirrors store.upsertSQL's WHERE guard and exists so the same rule can
+// be unit-tested without a database.
 func (e EventRecord) IsNewerThan(prev EventRecord) bool {
 	if e.OccurredAt.After(prev.OccurredAt) {
 		return true

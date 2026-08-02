@@ -9,7 +9,7 @@ import (
 )
 
 // fixture mirrors internal/money/testdata/rounding.json, produced by
-// tools/money/gen_rounding_fixture.py. See CLAUDE.md guardrail 5.
+// tools/money/gen_rounding_fixture.py.
 type fixture struct {
 	Seed  int `json:"seed"`
 	Count int `json:"count"`
@@ -64,9 +64,9 @@ func sameBits(a, b float64) bool {
 	return math.Float64bits(a) == math.Float64bits(b)
 }
 
-// TestRoundCPython_MatchesCPython is the gate described in CLAUDE.md guardrail
-// 5. It must pass with exact bit equality — if it fails, the correct response
-// is to fix RoundCPython, never to loosen the comparison.
+// TestRoundCPython_MatchesCPython must pass with exact bit equality — if it
+// fails, the correct response is to fix RoundCPython, never to loosen the
+// comparison.
 func TestRoundCPython_MatchesCPython(t *testing.T) {
 	f := loadFixture(t)
 	t.Logf("fixture: %d cases, python %s, numpy %s", f.Count, f.Env.Python, f.Env.NumPy)

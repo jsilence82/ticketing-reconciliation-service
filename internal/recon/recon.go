@@ -3,9 +3,8 @@
 //
 // It is a PURE library: plain slices in, plain structs out. It must not import
 // any storage, HTTP, or provider-client package. That constraint is what makes
-// the parity harness possible and what makes CLAUDE.md guardrail 2
-// mechanically enforceable, so it is enforced by depguard in .golangci.yml
-// rather than by convention.
+// the parity harness possible, and it is enforced by depguard in
+// .golangci.yml rather than by convention.
 //
 // # What ships and what does not
 //
@@ -13,8 +12,8 @@
 //     transferred / pending per resource, which is what the service stores and
 //     what GET /events exposes.
 //   - The Totals and Statistics builders live in recon/oracle and are a
-//     VERIFICATION ORACLE, not a product surface. They exist to diff against the
-//     dashboard's sheets (guardrail 1). No endpoint may serve them.
+//     VERIFICATION ORACLE, not a product surface. They exist to diff against
+//     the dashboard's sheets. No endpoint may serve them.
 //
 // # Fidelity
 //
@@ -57,8 +56,8 @@ var voidReadmitted = map[string]bool{"void": true, "voided": true}
 //
 // EVERY flag defaults to false, meaning "reproduce the Python exactly, bug and
 // all". Each corresponds to a numbered entry in the behavior ledger in
-// docs/PARITY.md. Turning one on is a deliberate, documented divergence — never
-// an incidental cleanup (CLAUDE.md guardrail 2).
+// docs/PARITY.md. Turning one on is a deliberate, documented divergence —
+// never an incidental cleanup.
 type Flags struct {
 	// FixUnmatchedDetection (ledger 1) computes unmatched PayPal transactions
 	// against the full transaction list instead of against the already-filtered

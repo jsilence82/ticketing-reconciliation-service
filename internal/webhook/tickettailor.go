@@ -1,7 +1,6 @@
 // Package webhook receives provider webhook deliveries and converts them into
 // the same model.EventRecord shape the backfill importer produces, so both
-// ingestion paths converge on internal/store.Upsert and the shared worker —
-// see CLAUDE.md, Architecture.
+// ingestion paths converge on internal/store.Upsert and the shared worker.
 package webhook
 
 import (
@@ -33,36 +32,28 @@ import (
 // guard against something feeding the endpoint an unbounded stream.
 const maxTicketTailorBody = 5 << 20 // 5 MiB
 
-// staleAfter is Ticket Tailor's own recommended replay window. CLAUDE.md is
-// explicit that this must NOT gate a reject: Ticket Tailor retries failed
-// deliveries for up to 72 hours, so a delivery first retried after 5 minutes
-// would fail forever and eventually disable the subscription. It is used here
-// only to annotate age for observability; internal/store.Upsert's
-// version-ordered guard is what actually rejects a true replay (identical
-// payload_hash, non-newer occurred_at) — see the WHERE clause in
-// store.upsertSQL.
+// staleAfter is Ticket Tailor's own recommended replay window, used here only
+// to annotate age for observability — it must NOT gate a reject, since Ticket
+// Tailor retries failed deliveries for up to 72 hours and a delivery first
+// retried after 5 minutes would then fail forever. internal/store.Upsert's
+// version-ordered guard is what actually rejects a true replay. See
+// docs/ARCHITECTURE.md, "Webhook signature verification".
 const staleAfter = 5 * time.Minute
 
 // VerifyTicketTailorSignature checks the HMAC-SHA256 signature Ticket Tailor
 // sends in the Tickettailor-Webhook-Signature header, and returns the
 // timestamp it was signed with.
 //
-// CONFIRMED against Ticket Tailor's own webhook security documentation and
-// Python sample code (2026-08-01), replacing the earlier "not yet pinned"
-// note in CLAUDE.md:
-//
-//   - The header is two comma-separated key=value parts, timestamp first,
-//     signature second. Ticket Tailor's sample parses them POSITIONALLY
-//     (`split(',')` then `split('=')[1]`) rather than by key name, so this
-//     does the same rather than assuming the literal key letters.
-//   - The signed message is the timestamp AS A STRING, concatenated directly
-//     with the raw request body bytes — no separator, no delimiter. This is
-//     NOT the Stripe `timestamp + "." + body` convention CLAUDE.md had
-//     guessed at before the real docs were available.
+// The header is two comma-separated key=value parts, timestamp first,
+// signature second, parsed POSITIONALLY (Ticket Tailor's own sample code does
+// `split(',')` then `split('=')[1]`) rather than by key name. The signed
+// message is the timestamp AS A STRING concatenated directly with the raw
+// request body bytes — no separator. See docs/ARCHITECTURE.md, "Webhook
+// signature verification" for how this was confirmed.
 //
 // rawBody must be the exact bytes received, captured before any JSON
 // decoding — re-serializing would change whitespace and key order and break
-// the HMAC, the same reason PayPal's CRC32 verification needs raw bytes.
+// the HMAC.
 func VerifyTicketTailorSignature(header string, rawBody []byte, secret string) (timestamp string, err error) {
 	parts := strings.Split(header, ",")
 	if len(parts) != 2 {
@@ -105,17 +96,15 @@ func positionalValue(part string) (string, error) {
 }
 
 // ttWebhookEnvelope is Ticket Tailor's webhook delivery wrapper.
-//
-// CONFIRMED against Ticket Tailor's webhook documentation (2026-08-01):
-// id/created_at/event/resource_url describe the DELIVERY, and payload is the
-// changed resource in the same representation the REST API returns it in —
+// id/created_at/event/resource_url describe the DELIVERY; payload is the
+// changed resource in the same representation the REST API returns it in,
 // which is why Payload is handed to ingest.FromTicketTailor unchanged rather
 // than needing a separate webhook-shaped decoder.
 //
 // The envelope's own id (e.g. "wh_15") is the delivery's identifier, NOT the
 // resource's — it maps to EventRecord.WebhookNotificationID, kept purely for
-// debugging delivery-level duplication (CLAUDE.md, Data model). The resource's
-// own id inside payload is what Upsert dedupes on.
+// debugging delivery-level duplication. The resource's own id inside payload
+// is what Upsert dedupes on.
 type ttWebhookEnvelope struct {
 	ID          string          `json:"id"`
 	CreatedAt   string          `json:"created_at"`
@@ -176,9 +165,9 @@ func (h *TicketTailorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	rec, err := ingest.FromTicketTailor(env.Payload, model.OriginWebhook)
 	if err != nil {
 		// The resource itself is what's malformed, not something transient on
-		// our end — retrying won't fix it, so this is a 400, not a 500. It is
-		// logged at Error rather than silently dropped because CLAUDE.md
-		// requires every ingested payload to be accounted for.
+		// our end — retrying won't fix it, so this is a 400, not a 500. Logged
+		// at Error rather than silently dropped, so every ingested payload is
+		// still accounted for somewhere.
 		h.log.Error("ticket tailor webhook: unparseable resource",
 			"event", env.Event, "delivery_id", env.ID, "err", err)
 		http.Error(w, "unparseable resource", http.StatusBadRequest)
@@ -221,7 +210,6 @@ func (h *TicketTailorHandler) logIfStale(timestamp string) {
 		return
 	}
 	if age := time.Since(time.Unix(sec, 0)); age > staleAfter {
-		h.log.Info("ticket tailor webhook: signed timestamp older than 5m "+
-			"(not rejected — see CLAUDE.md on the 72h retry window)", "age", age)
+		h.log.Info("ticket tailor webhook: signed timestamp older than 5m (not rejected)", "age", age)
 	}
 }

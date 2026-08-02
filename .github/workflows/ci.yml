@@ -1,15 +1,12 @@
-# Mirrors the shape of fica-ci-bridge's CI: a single build job on ubuntu-latest,
-# triggered on push and PR to main, with toolchain caching delegated to the
-# setup action. No matrix, no release job.
+# A single build job on ubuntu-latest, triggered on push and PR to main, with
+# toolchain caching delegated to the setup action. No matrix, no release job.
+# See docs/DEPLOYMENT.md, "Image build and deploy" for the full rationale,
+# including why this deliberately doesn't mirror fica-ci-bridge's shape.
 #
-# Two deliberate additions over that shape (see CLAUDE.md, "On the
-# fica-ci-bridge reference"):
-#   - A lint step. fica-ci-bridge has no linter at all.
-#   - An image build+push step, gated to `push` on main only. Deployment here
-#     is `compose pull && compose up -d` on a VPS that is explicitly forbidden
-#     from building its own image (CLAUDE.md, Deployment) — CI has to be the
-#     thing that produces it. Scoped to `push` so a PR branch, which has not
-#     been reviewed, never publishes an image anyone could pull.
+# The image build+push step is gated to `push` on main only: deployment is
+# `compose pull && compose up -d` on a VPS that never builds its own image,
+# so CI has to be the thing that produces it, and a PR branch — which has not
+# been reviewed — must never publish an image anyone could pull.
 name: CI
 
 on:
@@ -28,8 +25,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # A services block is not a build matrix — the single-job shape CLAUDE.md
-    # asks for is preserved. Pinned to the major the VPS will run.
+    # A services block is not a build matrix — this stays a single job.
+    # Pinned to the major the VPS will run.
     services:
       postgres:
         image: postgres:17

@@ -9,7 +9,7 @@ RUN go mod download
 
 # Selective copies, never `COPY . .` — a broad copy would pull in reference/ and
 # any local snapshot data. .dockerignore also excludes them, but defence in
-# depth matters here: those paths hold live buyer PII (see CLAUDE.md).
+# depth matters here: those paths can hold live buyer PII.
 COPY cmd ./cmd
 COPY internal ./internal
 

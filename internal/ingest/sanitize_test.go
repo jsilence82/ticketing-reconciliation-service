@@ -8,9 +8,8 @@ import (
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 )
 
-// Fixtures are invented. CLAUDE.md forbids SSG's live account data as test
-// fixtures, and a PII test whose fixture contains real PII would be
-// self-defeating anyway.
+// Fixtures are invented, never real account data — a PII test whose fixture
+// contains real PII would be self-defeating anyway.
 
 const rawOrder = `{
   "object": "order",

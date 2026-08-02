@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Nightly Postgres backup: pg_dump piped straight into restic, so an
-# unencrypted dump never touches disk on the VPS. CLAUDE.md, Deployment:
-# "back up Postgres on a schedule... the reconciliation history is not
-# reconstructible from webhooks, only from a full REST backfill" — and even a
-# backfill would not recover the audit trail (delivery timing,
-# signature_verified_at, retry/dead-letter history), so this is real data,
-# not a convenience.
+# unencrypted dump never touches disk on the VPS. See docs/ENVIRONMENT.md,
+# "Postgres backups" for why this matters — the reconciliation history and
+# its audit trail are not otherwise reconstructible.
 #
 # Deliberately NOT a Compose service. This only needs to run once a night;
 # a permanently-running container for that is new infrastructure for no

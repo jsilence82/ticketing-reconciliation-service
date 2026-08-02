@@ -59,8 +59,8 @@ type PayPalClient struct {
 	webhookTokenExpiry time.Time
 }
 
-// NewPayPalClient builds a client. baseURL selects sandbox or live; the caller
-// decides, because that choice is gated by guardrail 4.
+// NewPayPalClient builds a client. baseURL selects sandbox or live; the
+// caller decides, since going live must be an explicit, deliberate choice.
 func NewPayPalClient(baseURL, clientID, secret string) *PayPalClient {
 	return &PayPalClient{
 		BaseURL:  strings.TrimRight(baseURL, "/"),
@@ -174,18 +174,13 @@ type VerifyWebhookSignatureRequest struct {
 	WebhookEvent     json.RawMessage `json:"webhook_event"`
 }
 
-// VerifyWebhookSignature asks PayPal to verify a webhook delivery, rather than
-// validating the X.509 cert chain offline.
-//
-// CLAUDE.md, Architecture, records this as a deliberate decision (2026-08-01):
-// at this project's volume the extra round trip is cheap, and delegating
-// verification to PayPal avoids re-implementing certificate chain validation,
-// which is easy to get subtly wrong (e.g. an unrestricted cert_url fetch is a
-// spoofing hole).
+// VerifyWebhookSignature asks PayPal to verify a webhook delivery, rather
+// than validating the X.509 cert chain offline — see docs/ARCHITECTURE.md,
+// "Webhook signature verification" for why.
 //
 // WebhookEvent must be the EXACT raw body bytes PayPal sent — re-serializing
-// would risk the same key-order/whitespace drift CLAUDE.md warns about for the
-// offline CRC32 path, and PayPal's own docs pass the received body through
+// would risk the same key-order/whitespace drift the offline CRC32 path
+// warns about, and PayPal's own docs pass the received body through
 // unmodified.
 func (c *PayPalClient) VerifyWebhookSignature(
 	ctx context.Context, req VerifyWebhookSignatureRequest,

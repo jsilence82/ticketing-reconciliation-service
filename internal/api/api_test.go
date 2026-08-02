@@ -135,11 +135,11 @@ func TestHealthIsUnauthenticated(t *testing.T) {
 	}
 }
 
-// A ticket can arrive by webhook before its order or event does (CLAUDE.md,
-// Persistence & read model): the assemble-time LEFT JOIN reads that as
-// empty/zero rather than erroring, which is correct for the matching rule but
-// means an orphan silently changes a night's numbers unless /healthz surfaces
-// it. This proves it does, and that a fully-resolved ticket is NOT counted.
+// A ticket can arrive by webhook before its order or event does: the
+// assemble-time LEFT JOIN reads that as empty/zero rather than erroring,
+// which is correct for the matching rule but means an orphan silently
+// changes a night's numbers unless /healthz surfaces it. This proves it
+// does, and that a fully-resolved ticket is NOT counted.
 func TestHealthUnresolvedReferences(t *testing.T) {
 	s := scratchStore(t)
 	h := newServer(t, s)
@@ -412,10 +412,9 @@ func TestListEventsRejectsBadInput(t *testing.T) {
 
 // --- money representation ------------------------------------------------------
 
-// CLAUDE.md: money crosses the boundary as decimal strings plus minor-unit
-// integers plus a currency code, never a JSON float. Consumers do the
-// arithmetic here, so this matters more than it would for a pre-aggregated
-// response.
+// Money crosses the boundary as decimal strings plus minor-unit integers
+// plus a currency code, never a JSON float. Consumers do the arithmetic
+// here, so this matters more than it would for a pre-aggregated response.
 func TestMoneyIsNotServedAsAFloat(t *testing.T) {
 	s := scratchStore(t)
 	seed(t, s, rec(model.SourcePayPal, model.ResourcePayPalTransaction, "TX1",
@@ -531,7 +530,7 @@ func TestGetEventNotFoundAndBadID(t *testing.T) {
 	}
 }
 
-// --- guardrail 3: no mutation surface -------------------------------------------
+// --- no mutation surface ---------------------------------------------------
 
 // The router must not answer a write verb on any route. This is the cheap check
 // that complements the database-level one.
@@ -552,8 +551,8 @@ func TestNoMutationRoutes(t *testing.T) {
 	}
 }
 
-// No aggregation endpoints. CLAUDE.md is explicit that Totals and Statistics are
-// consumer-side, and internal/recon/oracle must never be served.
+// No aggregation endpoints. Totals and Statistics are consumer-side, and
+// internal/recon/oracle must never be served.
 func TestNoReconciliationEndpoints(t *testing.T) {
 	s := scratchStore(t)
 	h := newServer(t, s)

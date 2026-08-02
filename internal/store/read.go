@@ -67,12 +67,10 @@ var reconcilableTypes = []string{"order", "issued_ticket", "event", "paypal_tran
 //     moves no figure; the values are well-conditioned enough that the
 //     compensation absorbs it. Not something to rely on.
 //
-//   - The visible-status set includes 'received'. CLAUDE.md's architecture
-//     diagram reads "Postgres (processed) → query API", which taken literally
-//     would make the first pass after a backfill see an empty table and
-//     classify every transaction unmatched. Only 'ignored' and 'dead_lettered'
-//     are excluded: the former is not reconcilable, the latter could not be
-//     parsed.
+//   - The visible-status set includes 'received'. Excluding it would make the
+//     first pass after a backfill see an empty table and classify every
+//     transaction unmatched. Only 'ignored' and 'dead_lettered' are excluded:
+//     the former is not reconcilable, the latter could not be parsed.
 func (s *Store) LoadResources(ctx context.Context) ([]RawResource, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT source, resource_type, resource_id, payload
@@ -280,9 +278,9 @@ func nilIfZero(t time.Time) any {
 
 // ProbeWritable reports whether this store's role can INSERT.
 //
-// It exists so the API can PROVE its connection is read-only rather than trust
-// configuration (guardrail 3). The write is attempted inside a transaction that
-// is always rolled back, so even a misconfigured role leaves nothing behind.
+// It exists so the API can PROVE its connection is read-only rather than
+// trust configuration. The write is attempted inside a transaction that is
+// always rolled back, so even a misconfigured role leaves nothing behind.
 //
 // Returns (true, nil) when the write succeeded — meaning the role is too
 // privileged for the API to use. Returns (false, nil) when Postgres refused on

@@ -255,8 +255,8 @@ func TestV1ProducesExpectedSchema(t *testing.T) {
 	})
 
 	t.Run("recon_status permits pending", func(t *testing.T) {
-		// CLAUDE.md's read-model section omits `pending` while its Data sources
-		// section requires it. The model is right; the constraint must allow it.
+		// An unresolved refund reference is ReconPending, not unmatched — the
+		// CHECK constraint must allow the value the classifier actually emits.
 		if _, err := conn.Exec(ctx, `
 			INSERT INTO events (source, resource_type, resource_id, origin, status,
 			                    payload, payload_hash, occurred_at, recon_status)

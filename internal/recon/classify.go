@@ -10,8 +10,8 @@ import (
 // and `recon_counterpart_id` columns of the `events` row it names.
 //
 // This is the service's actual product. The Totals/Statistics builders in
-// recon/oracle exist only to prove the matching rule is right (guardrail 1);
-// this is what ships and what `GET /events?recon_status=` filters on.
+// recon/oracle exist only to prove the matching rule is right; this is what
+// ships and what `GET /events?recon_status=` filters on.
 type Classification struct {
 	Source       model.Source
 	ResourceType model.ResourceType
@@ -32,9 +32,8 @@ type Classification struct {
 //
 // # Relationship to the reference implementation
 //
-// The Python has no per-resource classification, so there is no behavior here to
-// port bug-for-bug and guardrail 2 does not bind. Two consequences, both
-// deliberate:
+// The Python has no per-resource classification, so there is no behavior
+// here to port bug-for-bug. Two consequences, both deliberate:
 //
 //   - Unmatched detection is computed correctly, against the full transaction
 //     list. The reference's `unmatched_df` is a tautology over its own filtered
@@ -141,8 +140,8 @@ func classifyTxn(
 // Only `transferred` is defined by the business contract on this side: voided in
 // Ticket Tailor, paid by PayPal, with no refund issued, so the original charge
 // still stands. Everything else is not_applicable — the reference has no notion
-// of an "unmatched ticket", and inventing one here would be exactly the silent
-// improvement guardrail 2 forbids.
+// of an "unmatched ticket", and inventing one here would be an undocumented
+// silent improvement over the ported behavior.
 func classifyTicket(r model.CanonicalTicket, f Flags) Classification {
 	c := Classification{
 		Source:       model.SourceTicketTailor,

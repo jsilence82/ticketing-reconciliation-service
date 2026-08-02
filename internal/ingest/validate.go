@@ -57,9 +57,9 @@ func ValidateStored(rt model.ResourceType, payload []byte) error {
 			return fmt.Errorf("paypal payload has no txn_id")
 		}
 		// net must equal gross + fee. A violation means the normalizer got the
-		// sign convention wrong, which CLAUDE.md calls the highest-risk
-		// conversion in the project — it would silently double or zero the fees
-		// in every downstream figure, so it fails loudly here instead.
+		// sign convention wrong — the highest-risk conversion in the project,
+		// since it would silently double or zero the fees in every downstream
+		// figure, so it fails loudly here instead.
 		if d := tx.Net - (tx.Gross + tx.Fee); d > 0.005 || d < -0.005 {
 			return fmt.Errorf("paypal %s: net %.2f != gross %.2f + fee %.2f",
 				tx.TxnID, tx.Net, tx.Gross, tx.Fee)

@@ -5,10 +5,10 @@ import "time"
 // Assemble joins stored resources into the canonical frame the matching rule
 // operates on.
 //
-// With no projection layer, this runs at READ time on every request rather than
-// being materialized. That is the deliberate trade in CLAUDE.md: one source of
-// truth and no cached view that can drift, at a data volume (thousands of rows)
-// where recomputing is free.
+// With no projection layer, this runs at READ time on every request rather
+// than being materialized — see docs/ARCHITECTURE.md, "No projection/
+// derived-table layer" — at a data volume (thousands of rows) where
+// recomputing is free.
 //
 // Grain is one row per issued ticket. Order-level fields (the PayPal match key,
 // payment type, refund amount) are broadcast down to every ticket on the order,
@@ -84,11 +84,9 @@ func Assemble(orders []TTOrder, tickets []TTIssuedTicket, events []TTEvent) []Ca
 }
 
 // UnresolvedParents counts tickets whose order or event is absent from the
-// supplied set.
-//
-// CLAUDE.md requires surfacing this on the health endpoint: an orphan silently
-// changes a night's numbers rather than producing a visible error, so a stale
-// count is an alerting condition, not a log line.
+// supplied set. Surfaced on the health endpoint: an orphan silently changes a
+// night's numbers rather than producing a visible error, so a stale count is
+// an alerting condition, not a log line.
 func UnresolvedParents(orders []TTOrder, tickets []TTIssuedTicket, events []TTEvent) (missingOrders, missingEvents int) {
 	haveOrder := make(map[string]bool, len(orders))
 	for _, o := range orders {

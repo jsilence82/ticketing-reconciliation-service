@@ -36,8 +36,9 @@ type eventDTO struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// amountsDTO carries money the way CLAUDE.md requires: decimal strings plus
-// minor-unit integers plus a currency code, never a JSON float.
+// amountsDTO carries money as decimal strings plus minor-unit integers plus
+// a currency code — never a JSON float, which every consumer's parser would
+// round-trip unpredictably.
 //
 // The raw payload is still served unchanged, and for PayPal rows it contains
 // those same amounts as JSON numbers. That is a genuine tension: the payload is
@@ -137,11 +138,10 @@ type healthResponse struct {
 	// that matter: both mean a consumer's figures are drifting from reality, and
 	// neither produces an error anywhere else.
 	Recon map[string]int `json:"recon"`
-	// Unresolved counts rows referencing a parent not yet seen. CLAUDE.md,
-	// Persistence & read model: a missing order or event reads as empty/zero at
-	// assemble time rather than erroring — correct for the matching rule, but it
-	// means an orphan silently changes a night's numbers unless something
-	// surfaces it here.
+	// Unresolved counts rows referencing a parent not yet seen. A missing order
+	// or event reads as empty/zero at assemble time rather than erroring —
+	// correct for the matching rule, but it means an orphan silently changes a
+	// night's numbers unless something surfaces it here.
 	Unresolved unresolvedDTO `json:"unresolved"`
 }
 

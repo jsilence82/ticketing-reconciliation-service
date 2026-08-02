@@ -30,8 +30,8 @@ type TicketTailorClient struct {
 // NewTicketTailorClient builds a client.
 //
 // Ticket Tailor has NO sandbox, so any key handed to this is a live key by
-// construction. That is why every call site must be behind the --live gate:
-// guardrail 4 cannot be delegated to PAYPAL_SANDBOX here.
+// construction. That is why every call site must be behind the --live gate —
+// there is no PAYPAL_SANDBOX-style toggle to delegate to here.
 func NewTicketTailorClient(baseURL, apiKey string) *TicketTailorClient {
 	return &TicketTailorClient{
 		BaseURL: strings.TrimRight(baseURL, "/"),
@@ -60,9 +60,10 @@ type TicketTailorPager struct {
 
 // Page returns a pager over an endpoint such as "orders" or "issued_tickets".
 //
-// extra carries optional filters. Note CLAUDE.md's warning about
-// `created_at.gte`: a watermark misses refunds posted against old orders, so it
-// is an optimisation, never the default for a parity run.
+// extra carries optional filters, including `created_at.gte` — an
+// optimisation, never the default for a parity run, since a watermark misses
+// refunds posted against old orders (see docs/ARCHITECTURE.md, "Backfill is
+// always a full resync").
 func (c *TicketTailorClient) Page(endpoint string, extra url.Values) *TicketTailorPager {
 	return &TicketTailorPager{
 		client:   c,

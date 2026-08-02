@@ -6,15 +6,15 @@
 // SAME rows with origin='backfill' and converges on the same reconciliation.
 // Dedup is on (source, resource_id), so a transaction backfilled today and
 // delivered by webhook tomorrow collapses to one row rather than being
-// processed twice. See CLAUDE.md, "Historical data (backfill)".
+// processed twice.
 //
 // Two sources:
 //
 //	--from-snapshot DIR   replay a captured snapshot. No network, no credentials.
-//	--live                permit real provider API calls (not yet implemented).
+//	--live                reach the real provider APIs.
 //
-// The snapshot path is what the parity-through-Postgres run uses, which is how
-// guardrail 1 is satisfied without a single live call.
+// The snapshot path is what the parity-through-Postgres run uses, which
+// proves the engine end to end without a single live call.
 package main
 
 import (
@@ -68,11 +68,10 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "ticketing-reconciliation-service backfill %s\n", version)
 
 	if *fromSnapshot == "" && !*live {
-		// Guardrail 4. Ticket Tailor has no sandbox, so a key in the environment
-		// is a live key by construction — the gate cannot be delegated to
-		// PAYPAL_SANDBOX.
+		// Reaching a live provider account must be a deliberate act, never a
+		// default.
 		return errors.New("nothing to do: pass --from-snapshot DIR, or --live to " +
-			"reach real provider APIs (see CLAUDE.md guardrail 4)")
+			"reach real provider APIs")
 	}
 
 	url := *dsn
@@ -161,9 +160,8 @@ func run() error {
 
 // runLiveImport reaches the real provider APIs. Only called behind --live.
 //
-// Ticket Tailor is always a FULL RESYNC: CLAUDE.md is explicit that a
-// created_at watermark misses refunds posted against old orders, and there is no
-// way to detect that omission afterwards.
+// Ticket Tailor is always a FULL RESYNC — see docs/ARCHITECTURE.md, "Backfill
+// is always a full resync" for why a created_at watermark isn't safe here.
 func runLiveImport(ctx context.Context, st *store.Store, from, to string) (ingest.Report, error) {
 	var report ingest.Report
 

@@ -3,8 +3,8 @@
 // for durable storage.
 //
 // The reference implementation applies TWO different rounding algorithms
-// depending on the code path, and neither is math.Round. See CLAUDE.md
-// guardrail 5 and docs/PARITY.md.
+// depending on the code path, and neither is math.Round. See docs/PARITY.md,
+// "Float and rounding parity".
 package money
 
 import (

@@ -213,8 +213,8 @@ func TestImportSnapshot(t *testing.T) {
 		t.Errorf("stored %d of %d resources", report.Total(), raw.Total())
 	}
 
-	// Re-importing must change nothing. Backfill runs repeatedly, and CLAUDE.md
-	// requires a resource backfilled today and delivered by webhook tomorrow to
+	// Re-importing must change nothing. Backfill runs repeatedly, and a
+	// resource backfilled today and delivered by webhook tomorrow must
 	// collapse to one row rather than being processed twice.
 	second, err := ingest.ImportSnapshot(c, s, raw)
 	if err != nil {

@@ -77,8 +77,8 @@ func TestFromPayPalWebhook_CaptureCompleted(t *testing.T) {
 	p := decodePayPalPayload(t, rec)
 
 	// The sign-convention assertions: this is the highest-risk conversion in
-	// the project (CLAUDE.md). Webhook gives a positive fee magnitude; the
-	// stored convention (matching Transaction Search) is negative on a charge.
+	// the project. Webhook gives a positive fee magnitude; the stored
+	// convention (matching Transaction Search) is negative on a charge.
 	if p.Gross != 10.00 {
 		t.Errorf("Gross = %v, want 10.00 (positive on a charge)", p.Gross)
 	}
@@ -149,7 +149,7 @@ func TestFromPayPalWebhook_CaptureRefunded(t *testing.T) {
 }
 
 func TestFromPayPalWebhook_RefundWithoutUpLinkStaysUnresolved(t *testing.T) {
-	// CLAUDE.md: never guess an unresolvable reference. The classifier
+	// Never guess an unresolvable reference. The classifier
 	// (internal/recon/classify.go) is what turns an empty reference on a
 	// refund into ReconPending — this test only proves the normalizer does
 	// not fabricate one when the "up" link is missing.

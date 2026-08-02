@@ -1,47 +1,10 @@
-# Docker Compose deployment stack for the small VPS described in CLAUDE.md,
-# Deployment. This is the PRODUCTION deployment target, not a local dev tool —
-# local development runs `go run ./cmd/server` directly against a local
-# Postgres (see docs/ENVIRONMENT.md); nothing here is needed for that.
+# Production deployment stack for a small VPS — not a local dev tool. Local
+# development runs `go run ./cmd/server` directly against a local Postgres
+# (see docs/ENVIRONMENT.md); nothing here is needed for that.
 #
-# The app image is pulled, never built here — the VPS is explicitly forbidden
-# from building its own image (CLAUDE.md, Deployment: "it couples deploys to
-# the box having a toolchain and a clean checkout"). `.github/workflows/ci.yml`
-# is what produces ghcr.io/<owner>/ticketing-reconciliation-service on every
-# merge to main.
-#
-# Observability: OpenTelemetry (in-process SDK, no separate container) →
-# Prometheus → Grafana, per CLAUDE.md's Tech stack section. The app exposes
-# Prometheus-formatted metrics on its own internal-only port (METRICS_PORT,
-# default 9464) — see internal/metrics and cmd/server/main.go — which is NOT
-# the port the proxy below reaches; the Caddyfile's site block proxies
-# everything on the app's main port to the internet with no path matching, so
-# /metrics has to live somewhere Caddy never sees. prometheus scrapes that
-# port over this internal network; grafana queries prometheus the same way
-# and is the only one of the two actually reachable externally (via its own
-# Caddy site block), since it's the human-facing UI.
-#
-# One-time setup on the VPS, before the first `up`:
-#   1. cp .env.example .env, then fill in production secrets. chmod 600 it.
-#      NEVER commit this file — see docs/ENVIRONMENT.md.
-#   2. Point DNS at this host (both the main domain and grafana.<domain>),
-#      then edit Caddyfile's placeholder domains.
-#   3. After the first `up` brings Postgres online, provision the read-only
-#      API role ONCE (not automated here — see docs/ENVIRONMENT.md, "The
-#      query API's database role"):
-#        docker compose exec -T postgres psql -U reconciler -d reconciliation \
-#          -v api_password="$(openssl rand -base64 32)" -v DBNAME=reconciliation \
-#          -f /dev/stdin < deploy/readonly-role.sql
-#      (-T disables TTY allocation so piped stdin actually reaches psql)
-#      Put the resulting connection string in .env as API_DATABASE_URL, then
-#      `docker compose up -d` again so the app picks it up.
-#   4. Backups (CLAUDE.md, Deployment: "back up Postgres on a schedule and
-#      verify a restore at least once" — see docs/ENVIRONMENT.md, "Postgres
-#      backups", and docs/BACKUP.md for the verification record). Not a
-#      service in this file — deploy/backup.sh is a host-cron script, not a
-#      container, because it only needs to run once a night. Provision the
-#      restic repository once (`restic init`), install the crontab line from
-#      that script's header, then run `make restore-check` and record the
-#      result.
+# Full rationale (why Compose not Kubernetes, why Caddy, observability
+# topology, one-time setup steps, backups) lives in docs/DEPLOYMENT.md — this
+# file only carries the service definitions and short per-service notes.
 #
 # Routine deploy, once set up:
 #   docker compose pull && docker compose up -d
@@ -54,9 +17,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # No ports: published. CLAUDE.md, Deployment: only the reverse proxy is
-    # reachable from outside the Compose network — the app is reached at
-    # http://app:8080 from inside it, which is what the Caddyfile does.
+    # No ports: published. Only the reverse proxy is reachable from outside
+    # the Compose network — the app is reached at http://app:8080 from
+    # inside it, which is what the Caddyfile does.
 
   postgres:
     image: postgres:17
@@ -65,11 +28,10 @@ services:
       POSTGRES_DB: reconciliation
       POSTGRES_USER: reconciler
       # No default — an unset password fails container startup rather than
-      # silently using a guessable one (CLAUDE.md guardrail 4's "secrets have
-      # no defaults" principle, applied here too).
+      # silently using a guessable one.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
-      # Named volume, not a bind mount into the repo (CLAUDE.md, Deployment).
+      # Named volume, not a bind mount into the repo.
       - postgres_data:/var/lib/postgresql/data
     # No ports: published — this holds buyer payment data and must not be
     # reachable from the internet at all, only from other Compose services.
@@ -80,9 +42,8 @@ services:
       retries: 10
 
   proxy:
-    # Caddy over nginx: automatic Let's Encrypt TLS with near-zero config,
-    # which suits a low-ops project for one nonprofit (CLAUDE.md, Deployment:
-    # "TLS is not optional... but it belongs to the proxy, not this service").
+    # Caddy over nginx: automatic Let's Encrypt TLS with near-zero config —
+    # see docs/DEPLOYMENT.md, "Why Caddy, not nginx".
     image: caddy:2-alpine
     restart: unless-stopped
     ports:
@@ -112,8 +73,7 @@ services:
     image: grafana/grafana:latest
     restart: unless-stopped
     environment:
-      # No default — same "secrets have no defaults" rule as
-      # POSTGRES_PASSWORD above (CLAUDE.md guardrail 4).
+      # No default — same rule as POSTGRES_PASSWORD above.
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?set GF_SECURITY_ADMIN_PASSWORD in .env}
     volumes:
       - grafana_data:/var/lib/grafana

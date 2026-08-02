@@ -94,7 +94,7 @@ sum-fixture: check-python
 fixtures: money-fixture sum-fixture
 
 ## parity: run the Go engine and the Python reference over the same real data
-##          and diff them cell by cell (CLAUDE.md guardrail 1)
+##          and diff them cell by cell
 ##
 ## Needs SSG_PARITY_DATA pointing at the out-of-tree historical dataset, and the
 ## reference/ checkout for the Python side. Exits non-zero on any difference.
@@ -106,7 +106,7 @@ parity: check-python build
 	./$(BIN)/parity -data "$(SSG_PARITY_DATA)" -out $(PARITY_OUT)/go.json
 	"$(PYTHON)" tools/parity/compare.py $(PARITY_OUT)/python.json $(PARITY_OUT)/go.json
 
-## parity-db: the parity run END TO END THROUGH POSTGRES (CLAUDE.md guardrail 1)
+## parity-db: the parity run END TO END THROUGH POSTGRES
 ##
 ## Imports the snapshot, reads it back out, re-assembles the canonical frame at
 ## read time, and diffs against the unmodified Python reference.
@@ -151,11 +151,9 @@ check-python:
 backup:
 	./deploy/backup.sh
 
-## restore-check: prove the latest backup actually restores (CLAUDE.md,
-##                 Deployment: "verify a restore at least once"). Talks only
-##                 to a disposable docker run container — never the real
-##                 postgres compose service. Record the result in
-##                 docs/BACKUP.md.
+## restore-check: prove the latest backup actually restores. Talks only to a
+##                 disposable docker run container — never the real postgres
+##                 compose service. Record the result in docs/BACKUP.md.
 restore-check:
 	./deploy/restore-check.sh
 

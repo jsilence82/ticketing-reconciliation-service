@@ -1,10 +1,12 @@
 // Package ingest turns a raw provider payload into a storable EventRecord.
 //
-// It is the single choke point both ingestion paths pass through — the backfill
-// importer today, webhook handlers in P4 — so anything that must be true of
-// every stored row is enforced here exactly once.
+// It is the single choke point both ingestion paths pass through — the
+// backfill importer and the webhook handlers — so anything that must be true
+// of every stored row is enforced here exactly once.
 //
 // The most important of those is that buyer PII never reaches the database.
+// See docs/ARCHITECTURE.md, "PII handling" for the allowlist-vs-denylist
+// rationale.
 package ingest
 
 import (
@@ -152,8 +154,7 @@ var allowed = map[model.ResourceType]*fieldSet{
 // deliberate: re-encoding a JSON number can change its text ("1e2" becomes
 // "100", trailing zeros move), and the parity harness depends on money values
 // surviving storage bit-for-bit. Keeping them verbatim also means PayPal's
-// decimal-string amounts stay strings, satisfying CLAUDE.md's "never a JSON
-// float" rule with no conversion at all.
+// decimal-string amounts stay strings, with no conversion at all.
 func Sanitize(rt model.ResourceType, raw []byte) ([]byte, error) {
 	spec, ok := allowed[rt]
 	if !ok {

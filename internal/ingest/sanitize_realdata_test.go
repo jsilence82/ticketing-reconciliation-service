@@ -11,8 +11,8 @@ import (
 	"github.com/jsilence82/ticketing-reconciliation-service/internal/model"
 )
 
-// The golden tests use invented fixtures, which is right — CLAUDE.md forbids
-// SSG's data as a fixture, and a PII test containing real PII defeats itself.
+// The golden tests use invented fixtures, which is right — a PII test
+// containing real PII would defeat itself.
 //
 // But invented fixtures only ever contain the fields someone thought to invent.
 // This sweep runs the sanitizer over the actual provider output, where the

@@ -10,9 +10,9 @@ import (
 
 // Consumers maps an API key to the name of the consumer holding it.
 //
-// Per-consumer keys rather than one shared secret, because CLAUDE.md's access
-// control section needs reconciliation data restricted to whoever handles SSG's
-// finances — and a shared secret cannot be revoked for one caller.
+// Per-consumer keys rather than one shared secret: reconciliation data is
+// restricted to whoever handles SSG's finances, and a shared secret cannot be
+// revoked for one caller.
 type Consumers map[string]string
 
 // ParseConsumers reads "name:key,name:key" from configuration.
