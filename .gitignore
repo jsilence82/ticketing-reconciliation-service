@@ -24,6 +24,10 @@ testdata/parity/*/input/
 CLAUDE.md
 docs/PARITY.md
 
+# Claude Code's own local tool settings — machine-specific, not project
+# config. Accidentally committed once (settings.json); excluded outright now.
+.claude/
+
 # --- Secrets --------------------------------------------------------------
 .env
 .env.*
