@@ -108,9 +108,15 @@ Read-only, authenticated with a per-consumer API key.
 
 ```
 GET /events?source=paypal&recon_status=unmatched
+GET /events?resource_type=event&since=2026-01-01&until=2026-06-30
 GET /events/{id}
 GET /healthz
 ```
+
+Filters: `source`, `status`, `recon_status`, `resource_type` (e.g. `event`
+for Ticket Tailor performance records, `paypal_transaction`), `since`/`until`
+(RFC3339 or a bare `YYYY-MM-DD` — `until` rounds a bare date up to the end
+of that day), plus `limit`/`cursor` for pagination.
 
 Money crosses the API boundary as a decimal string, a minor-unit integer,
 and a currency code — never a JSON float, so a consumer's own arithmetic

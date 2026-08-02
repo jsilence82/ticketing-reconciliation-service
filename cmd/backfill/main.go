@@ -189,7 +189,7 @@ func runLiveImport(ctx context.Context, st *store.Store, from, to string) (inges
 	fmt.Fprintf(os.Stderr, "ticket tailor: %s (%s)\n",
 		ttReport, time.Since(ttStart).Round(time.Millisecond))
 
-	start, end, err := payPalWindow(from, to)
+	start, end, err := payPalWindow(time.Now().UTC(), from, to)
 	if err != nil {
 		return report, err
 	}
@@ -220,8 +220,10 @@ func runLiveImport(ctx context.Context, st *store.Store, from, to string) (inges
 const ticketTailorBaseURL = "https://api.tickettailor.com/v1"
 
 // payPalWindow defaults to the widest range Transaction Search will serve.
-func payPalWindow(from, to string) (time.Time, time.Time, error) {
-	end := time.Now().UTC()
+// now is injected rather than read internally so the default-range
+// calculation is testable without depending on the wall clock.
+func payPalWindow(now time.Time, from, to string) (time.Time, time.Time, error) {
+	end := now
 	if to != "" {
 		t, err := time.Parse("2006-01-02", to)
 		if err != nil {
@@ -230,8 +232,15 @@ func payPalWindow(from, to string) (time.Time, time.Time, error) {
 		end = t
 	}
 
-	// Transaction Search only retains about three years.
-	start := end.AddDate(-3, 0, 0)
+	// Transaction Search only retains about three years. fetchPage sends
+	// this truncated to midnight UTC on the calendar date (start of day,
+	// not the exact instant) — so "exactly 3 years before now" would
+	// truncate to a time PayPal considers slightly MORE than 3 years back
+	// whenever the request runs after midnight UTC, and gets rejected
+	// ("Start Date provided is before the allowed range of 3 years").
+	// Padding by a day guarantees the truncated value always lands after
+	// PayPal's true boundary, regardless of what time of day this runs.
+	start := end.AddDate(-3, 0, 1)
 	if from != "" {
 		t, err := time.Parse("2006-01-02", from)
 		if err != nil {

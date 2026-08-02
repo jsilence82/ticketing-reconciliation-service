@@ -753,6 +753,33 @@ func TestListEventsFilters(t *testing.T) {
 	if len(page.Events) != 0 {
 		t.Errorf("since filter returned %d rows for a future cutoff", len(page.Events))
 	}
+
+	page, err = s.ListEvents(c, ListFilter{ResourceType: string(model.ResourceOrder)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].ResourceID != "TT1" {
+		t.Errorf("resource_type filter returned %d rows; want just TT1", len(page.Events))
+	}
+
+	// until is the same idea as since, but as an upper bound: a cutoff
+	// before baseTime must exclude both seeded rows.
+	page, err = s.ListEvents(c, ListFilter{Until: baseTime.Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 0 {
+		t.Errorf("until filter returned %d rows for a past cutoff", len(page.Events))
+	}
+
+	// A cutoff after baseTime must still include both.
+	page, err = s.ListEvents(c, ListFilter{Until: baseTime.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 2 {
+		t.Errorf("until filter returned %d rows for a future cutoff, want both seeded rows", len(page.Events))
+	}
 }
 
 func TestListEventsRejectsBadCursor(t *testing.T) {

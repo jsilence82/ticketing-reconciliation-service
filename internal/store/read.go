@@ -118,12 +118,15 @@ func (s *Store) GetEvent(ctx context.Context, id string) (model.EventRecord, err
 
 // ListFilter selects a slice of the event log for GET /events.
 type ListFilter struct {
-	Source      string
-	Status      string
-	ReconStatus string
+	Source       string
+	Status       string
+	ReconStatus  string
+	ResourceType string
 	// Since filters on occurred_at — the PROVIDER's clock, so "sales since X"
 	// means what a treasurer would expect, not "rows we happened to write since X".
-	Since  time.Time
+	Since time.Time
+	// Until is the same idea as an upper bound. Inclusive, like Since.
+	Until  time.Time
 	Cursor string
 	Limit  int
 }
@@ -169,16 +172,18 @@ func (s *Store) ListEvents(ctx context.Context, f ListFilter) (Page, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+eventColumns+`
 		  FROM events e
-		 WHERE ($1::text        IS NULL OR e.source       = $1)
-		   AND ($2::text        IS NULL OR e.status       = $2)
-		   AND ($3::text        IS NULL OR e.recon_status = $3)
-		   AND ($4::timestamptz IS NULL OR e.occurred_at >= $4)
-		   AND ($5::timestamptz IS NULL OR (e.created_at, e.id) > ($5, $6::uuid))
+		 WHERE ($1::text        IS NULL OR e.source        = $1)
+		   AND ($2::text        IS NULL OR e.status        = $2)
+		   AND ($3::text        IS NULL OR e.recon_status  = $3)
+		   AND ($4::text        IS NULL OR e.resource_type = $4)
+		   AND ($5::timestamptz IS NULL OR e.occurred_at >= $5)
+		   AND ($6::timestamptz IS NULL OR e.occurred_at <= $6)
+		   AND ($7::timestamptz IS NULL OR (e.created_at, e.id) > ($7, $8::uuid))
 		 ORDER BY e.created_at, e.id
-		 LIMIT $7`,
+		 LIMIT $9`,
 		nilIfEmpty(f.Source), nilIfEmpty(f.Status), nilIfEmpty(f.ReconStatus),
-		nilIfZero(f.Since), nilIfZero(cursorAt), nilIfEmpty(cursorID),
-		limit+1)
+		nilIfEmpty(f.ResourceType), nilIfZero(f.Since), nilIfZero(f.Until),
+		nilIfZero(cursorAt), nilIfEmpty(cursorID), limit+1)
 	if err != nil {
 		return Page{}, fmt.Errorf("list events: %w", err)
 	}

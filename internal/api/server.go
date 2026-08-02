@@ -130,10 +130,11 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	filter := store.ListFilter{
-		Source:      q.Get("source"),
-		Status:      q.Get("status"),
-		ReconStatus: q.Get("recon_status"),
-		Cursor:      q.Get("cursor"),
+		Source:       q.Get("source"),
+		Status:       q.Get("status"),
+		ReconStatus:  q.Get("recon_status"),
+		ResourceType: q.Get("resource_type"),
+		Cursor:       q.Get("cursor"),
 	}
 
 	if v := q.Get("since"); v != "" {
@@ -144,6 +145,16 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter.Since = t
+	}
+
+	if v := q.Get("until"); v != "" {
+		t, err := parseUntilTime(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest,
+				"until must be RFC3339 or YYYY-MM-DD")
+			return
+		}
+		filter.Until = t
 	}
 
 	if v := q.Get("limit"); v != "" {
@@ -219,6 +230,24 @@ func parseTime(v string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse("2006-01-02", v)
+}
+
+// parseUntilTime is parseTime's upper-bound counterpart. A bare date rounds
+// up to the end of that day rather than its start, so `until=2026-06-30`
+// reads as "through the end of June 30th" — matching the same end-of-day
+// convention internal/importer/paypal.go already uses for its own PayPal
+// Transaction Search date-range upper bound. A full RFC3339 timestamp is
+// used as given; only a bare date gets rounded, since the caller was
+// already precise otherwise.
+func parseUntilTime(v string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	t, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.Add(24*time.Hour - time.Nanosecond), nil
 }
 
 // parsePositiveInt rejects a limit that is absent, non-numeric or non-positive.

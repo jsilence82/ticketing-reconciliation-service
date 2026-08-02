@@ -337,6 +337,54 @@ func TestListEventsFilters(t *testing.T) {
 	if len(body.Events) != 1 || body.Events[0].ResourceID != "or_1" {
 		t.Errorf("source filter returned %+v, want just or_1", body.Events)
 	}
+
+	w = do(t, h, "GET", "/events?resource_type=order", testKey)
+	body.Events = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 1 || body.Events[0].ResourceID != "or_1" {
+		t.Errorf("resource_type filter returned %+v, want just or_1", body.Events)
+	}
+}
+
+// until is the upper-bound counterpart to since. A bare date rounds up to
+// the end of that day, so a row that occurred at 23:00 on a given date is
+// still included by `until=<that same date>` — matching the same
+// end-of-day convention internal/importer/paypal.go uses for its own
+// PayPal Transaction Search date-range upper bound.
+func TestListEventsUntilFilterRoundsBareDateToEndOfDay(t *testing.T) {
+	s := scratchStore(t)
+	seed(t, s, model.EventRecord{
+		Source: model.SourcePayPal, ResourceType: model.ResourcePayPalTransaction,
+		ResourceID: "TX1", Origin: model.OriginBackfill, Status: "processed",
+		Payload:    json.RawMessage(`{"txn_id":"TX1"}`),
+		OccurredAt: time.Date(2026, 3, 1, 23, 0, 0, 0, time.UTC),
+	})
+	h := newServer(t, s)
+
+	var body struct {
+		Events []struct {
+			ResourceID string `json:"resource_id"`
+		} `json:"events"`
+	}
+
+	w := do(t, h, "GET", "/events?until=2026-03-01", testKey)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 1 || body.Events[0].ResourceID != "TX1" {
+		t.Errorf("until=2026-03-01 returned %+v, want TX1 (23:00 the same day)", body.Events)
+	}
+
+	w = do(t, h, "GET", "/events?until=2026-02-28", testKey)
+	body.Events = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 0 {
+		t.Errorf("until=2026-02-28 returned %+v, want none", body.Events)
+	}
 }
 
 // Aggregation is consumer-side, so a consumer summing a range must see every
@@ -399,6 +447,7 @@ func TestListEventsRejectsBadInput(t *testing.T) {
 	tests := []struct{ name, path string }{
 		{"bad cursor", "/events?cursor=not-base64!!"},
 		{"bad since", "/events?since=last-tuesday"},
+		{"bad until", "/events?until=last-tuesday"},
 		{"bad limit", "/events?limit=-3"},
 	}
 	for _, tc := range tests {
