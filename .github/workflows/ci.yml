@@ -58,9 +58,18 @@ jobs:
         run: make vet
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+        # Installed via `go install`, not golangci-lint-action's prebuilt
+        # binary: the action's binary lags go.mod's `go` directive (built
+        # with an older Go than 1.26.4), and golangci-lint refuses to run
+        # when its own build Go is older than the module's targeted Go. `go
+        # install` compiles it with the toolchain Set up Go just installed,
+        # so the two can never mismatch. The /v2 module path is required —
+        # .golangci.yml uses the v2 config schema (`version: "2"`), and a v1
+        # binary refuses to load a v2 config just as loudly as the original
+        # error.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
 
       - name: Test
         # DATABASE_URL is set here rather than at job level so the
