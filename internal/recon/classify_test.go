@@ -124,6 +124,39 @@ func TestClassify_UnlinkedRefundIsPendingNotUnmatched(t *testing.T) {
 	}
 }
 
+// A bank withdrawal is negative and unreferenced — the same shape as an
+// unlinked refund — but it is not a ticketing transaction. It must not land in
+// pending, or every payout to the bank raises a false unresolved-refund alarm.
+// Without an event code the refund handling must still win: absence of
+// evidence is not evidence of a withdrawal.
+func TestClassify_WithdrawalIsNotApplicable(t *testing.T) {
+	withdrawal := func(id, code string) model.PayPalTxn {
+		return model.PayPalTxn{TxnID: id, Gross: -2132.63, Net: -2132.63, Status: "S", EventCode: code}
+	}
+
+	tests := []struct {
+		name string
+		txn  model.PayPalTxn
+		want model.ReconStatus
+	}{
+		{"general withdrawal T0400", withdrawal("W1", "T0400"), model.ReconNotApplicable},
+		{"user-initiated withdrawal T0403", withdrawal("W2", "T0403"), model.ReconNotApplicable},
+		{"refund event code stays pending", withdrawal("W3", "T1107"), model.ReconPending},
+		{"no event code stays pending", withdrawal("W4", ""), model.ReconPending},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := []model.CanonicalTicket{ticket("it_1", "or_1", "TX1")}
+			got := find(t, Classify(rows, []model.PayPalTxn{tc.txn}, Flags{}), tc.txn.TxnID)
+
+			if got.Status != tc.want {
+				t.Errorf("Status = %q, want %q", got.Status, tc.want)
+			}
+		})
+	}
+}
+
 func TestClassify_TransferredTicket(t *testing.T) {
 	rows := []model.CanonicalTicket{
 		ticket("it_1", "or_1", "TX1", voided(0)),    // transfer: no refund issued

@@ -98,6 +98,15 @@ func classifyTxn(
 		ResourceID:   tx.TxnID,
 	}
 
+	// A bank withdrawal is not a ticketing transaction, so it has no verdict.
+	// Checked first because withdrawals are negative and carry no reference,
+	// which is exactly the unresolved-refund shape below — without this, every
+	// withdrawal reads as a pending refund and inflates the pending alert count.
+	if tx.IsWithdrawal() {
+		c.Status = model.ReconNotApplicable
+		return c
+	}
+
 	// A refund with no resolved link to its original charge cannot be judged.
 	// PayPal webhooks omit paypal_reference_id entirely, so this is the normal
 	// state on first ingest, not an anomaly — but it must never be guessed, and

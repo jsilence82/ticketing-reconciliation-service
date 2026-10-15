@@ -139,7 +139,7 @@ var allowed = map[model.ResourceType]*fieldSet{
 			// dashboard-normalized
 			"txn_id", "date", "gross", "fee", "net", "status",
 			// shared
-			"paypal_reference_id", "currency",
+			"paypal_reference_id", "currency", "transaction_event_code",
 		),
 		objects: map[string]*fieldSet{
 			"transaction_amount": {scalars: fields("value", "currency_code")},

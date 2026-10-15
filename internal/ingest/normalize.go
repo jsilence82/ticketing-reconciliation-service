@@ -162,6 +162,7 @@ type searchTransaction struct {
 		TransactionID     string `json:"transaction_id"`
 		InitiationDate    string `json:"transaction_initiation_date"`
 		TransactionStatus string `json:"transaction_status"`
+		EventCode         string `json:"transaction_event_code"`
 		PayPalReferenceID string `json:"paypal_reference_id"`
 		TransactionAmount *money `json:"transaction_amount"`
 		FeeAmount         *money `json:"fee_amount"`
@@ -224,6 +225,9 @@ func FromPayPalSearch(raw []byte, origin model.Origin) (model.EventRecord, error
 		"status":              ti.TransactionStatus,
 		"paypal_reference_id": ti.PayPalReferenceID,
 		"currency":            currency,
+		// Not in the dashboard cache shape. Carried so the classifier can tell
+		// a bank withdrawal (T04xx) from a refund; both have negative gross.
+		"transaction_event_code": ti.EventCode,
 	}
 
 	blob, err := json.Marshal(normalized)
