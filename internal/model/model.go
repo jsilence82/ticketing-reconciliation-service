@@ -16,7 +16,10 @@
 // stored.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Source identifies which provider a record came from.
 type Source string
@@ -283,6 +286,12 @@ type PayPalTxn struct {
 	// Currency is captured even though the reference ignores it and labels all
 	// output in euro.
 	Currency string
+
+	// EventCode is Transaction Search's transaction_event_code (e.g. T0006 for
+	// a checkout payment, T1107 for a refund, T0400 for a bank withdrawal).
+	// The reference never reads it. Only a raw Transaction Search pull supplies
+	// it — the dashboard cache and webhooks do not — so it is often empty.
+	EventCode string
 }
 
 // IsRefund reports whether the transaction moves money back to the buyer.
@@ -290,6 +299,15 @@ type PayPalTxn struct {
 // The reference detects refunds by sign rather than by status
 // (sections/reconciliation.py:191), and that is reproduced here.
 func (t PayPalTxn) IsRefund() bool { return t.Gross < 0 }
+
+// IsWithdrawal reports whether the transaction is a transfer out of the PayPal
+// account to a bank (event code group T04xx), not a ticketing transaction.
+//
+// Withdrawals are negative, so IsRefund is true for them too. IsRefund is left
+// alone because it mirrors the reference's sign test; this check is consulted
+// only by the classifier, which has no Python counterpart. An empty EventCode
+// is never a withdrawal — absence of evidence keeps the refund handling.
+func (t PayPalTxn) IsWithdrawal() bool { return strings.HasPrefix(t.EventCode, "T04") }
 
 // TTOrder is a Ticket Tailor order as stored in `events`. It carries the match
 // key.

@@ -176,6 +176,7 @@ type storedPayPal struct {
 	Net               float64 `json:"net"`
 	Status            string  `json:"status"`
 	PayPalReferenceID string  `json:"paypal_reference_id"`
+	EventCode         string  `json:"transaction_event_code"`
 }
 
 func decodePayPal(payload []byte) (model.PayPalTxn, error) {
@@ -193,6 +194,7 @@ func decodePayPal(payload []byte) (model.PayPalTxn, error) {
 		Net:               s.Net,
 		Status:            s.Status,
 		PayPalReferenceID: s.PayPalReferenceID,
+		EventCode:         s.EventCode,
 		// Currency is deliberately left unset: the dashboard's cache does not
 		// carry one, and snapshot.Load does not invent one either. Inventing it
 		// here would make the two paths disagree.

@@ -153,6 +153,42 @@ func TestFromPayPalCacheRequiresATxnID(t *testing.T) {
 	}
 }
 
+// The event code is the only thing that tells a bank withdrawal from a refund,
+// so it must survive normalize → sanitize → store → decode. Dropping it at any
+// step silently turns every withdrawal back into a pending refund.
+func TestPayPalEventCodeSurvivesToDecode(t *testing.T) {
+	raw := `{"transaction_info":{
+		"transaction_id":"W1",
+		"transaction_event_code":"T0400",
+		"transaction_initiation_date":"2025-12-07T09:00:00+0100",
+		"transaction_status":"S",
+		"transaction_amount":{"value":"-3845.05","currency_code":"EUR"}}}`
+
+	rec, err := ingest.FromPayPalSearch([]byte(raw), model.OriginBackfill)
+	if err != nil {
+		t.Fatalf("FromPayPalSearch: %v", err)
+	}
+
+	in, err := ingest.DecodeResources([]store.RawResource{{
+		Source: rec.Source, ResourceType: rec.ResourceType,
+		ResourceID: rec.ResourceID, Payload: rec.Payload,
+	}})
+	if err != nil {
+		t.Fatalf("DecodeResources: %v", err)
+	}
+	if len(in.Txns) != 1 {
+		t.Fatalf("decoded %d transactions, want 1", len(in.Txns))
+	}
+
+	tx := in.Txns[0]
+	if tx.EventCode != "T0400" {
+		t.Errorf("EventCode = %q, want T0400", tx.EventCode)
+	}
+	if !tx.IsWithdrawal() {
+		t.Error("IsWithdrawal() = false for a T0400 transaction")
+	}
+}
+
 // --- import into Postgres ----------------------------------------------------
 
 func scratchStore(t *testing.T) *store.Store {
